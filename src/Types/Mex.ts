@@ -1,3 +1,5 @@
+import { proto } from '../../WAProto'
+
 export enum XWAPaths {
 	xwa2_newsletter_create = 'xwa2_newsletter_create',
 	xwa2_newsletter_subscribers = 'xwa2_newsletter_subscribers',
@@ -14,7 +16,8 @@ export enum XWAPaths {
 	xwa2_newsletter_demote = 'xwa2_newsletter_demote',
 	xwa2_newsletter_delete_v2 = 'xwa2_newsletter_delete_v2',
 	xwa2_fetch_account_reachout_timelock = 'xwa2_fetch_account_reachout_timelock',
-	xwa2_message_capping_info = 'xwa2_message_capping_info'
+	xwa2_message_capping_info = 'xwa2_message_capping_info',
+	xwa2_newsletter_subscribed = 'xwa2_newsletter_subscribed'
 }
 
 export enum QueryIds {
@@ -31,7 +34,8 @@ export enum QueryIds {
 	DEMOTE = '6551828931592903',
 	DELETE = '30062808666639665',
 	REACHOUT_TIMELOCK = '23983697327930364',
-	MESSAGE_CAPPING_INFO = '24503548349331633'
+	MESSAGE_CAPPING_INFO = '24503548349331633',
+	SUBSCRIBED = '6388546374527196'
 }
 export type NewsletterUpdate = {
 	name?: string
@@ -102,4 +106,17 @@ export interface NewsletterMetadata {
 		name?: string
 		description?: string
 	}
+}
+
+export type NewsletterReaction = { count: number; code: string }
+
+export type NewsletterFetchedUpdate = {
+	/**id of message in newsletter, starts from 100 */
+	server_id: string
+	/**count of views in this message */
+	views?: number
+	/**reactions in this message */
+	reactions: NewsletterReaction[]
+	/**the message, if you requested only updates, you will not receive message */
+	message?: proto.IWebMessageInfo
 }
