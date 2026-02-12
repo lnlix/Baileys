@@ -36,7 +36,12 @@ import {
 import { getUrlInfo } from '../Utils/link-preview'
 import { makeKeyedMutex } from '../Utils/make-mutex'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
-import { isTcTokenExpired, resolveTcTokenJid, shouldSendNewTcToken } from '../Utils/tc-token-utils'
+import {
+	isTcTokenExpired,
+	resolveTcTokenJid,
+	shouldSendNewTcToken,
+	storeTcTokensFromIqResult
+} from '../Utils/tc-token-utils'
 import {
 	areJidsSameUser,
 	type BinaryNode,
@@ -1036,7 +1041,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				)
 				tcTokenBuffer = undefined
 				// Opportunistic cleanup: remove expired token from store
-				Promise.resolve(authState.keys.set({ tctoken: { [tcTokenJid]: null } })).catch(() => {})
+				try {
+					await authState.keys.set({ tctoken: { [tcTokenJid]: null } })
+				} catch {
+					/* ignore cleanup errors */
+				}
 			}
 
 			// If tctoken is missing or expired for a 1:1 send, proactively fetch it from the server
@@ -1044,15 +1053,36 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				try {
 					logger.debug({ jid: destinationJid }, 'tctoken missing, requesting from server')
 					didFetchTcToken = true
-					// The IQ response is typically empty — actual tokens arrive via
-					// privacy_token notifications handled by handlePrivacyTokenNotification.
-					// storeTcTokensFromResult in the recv handler consolidates parsing.
-					await getPrivacyTokens([destinationJid])
+					const fetchResult = await getPrivacyTokens([destinationJid])
 
-					// Re-read from key store — the notification handler may have
-					// stored the token during the IQ round-trip
+					// Parse inline tokens from IQ result using the shared parser
+					// (includes monotonicity guard)
+					await storeTcTokensFromIqResult({
+						result: fetchResult,
+						fallbackJid: destinationJid,
+						keys: authState.keys,
+						getLIDForPN: signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+					})
+
+					// Re-read from key store — the notification handler or inline
+					// parsing above may have stored the token
 					const refreshed = await authState.keys.get('tctoken', [tcTokenJid])
-					tcTokenBuffer = refreshed[tcTokenJid]?.token
+					const refreshedEntry = refreshed[tcTokenJid]
+					tcTokenBuffer = refreshedEntry?.token
+
+					// The getPrivacyTokens IQ (type='set') also acts as issuance,
+					// so record senderTimestamp to prevent redundant fire-and-forget
+					// on the next message to this contact.
+					if (refreshedEntry?.token?.length) {
+						await authState.keys.set({
+							tctoken: {
+								[tcTokenJid]: {
+									...refreshedEntry,
+									senderTimestamp: unixTimestampSeconds()
+								}
+							}
+						})
+					}
 				} catch (err: any) {
 					logger.warn({ jid: destinationJid, trace: err?.stack }, 'failed to fetch privacy token before send')
 				}

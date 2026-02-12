@@ -644,8 +644,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		// WA Web only includes tctoken for user JIDs (not groups/newsletters)
 		// and never for own profile pic (Chat model for self has no tcToken).
 		// Including tctoken for own JID causes the server to never respond.
-		const isUserJid = isPnUser(jid) || isLidUser(jid)
 		const normalizedJid = jidNormalizedUser(jid)
+		const isUserJid = isPnUser(normalizedJid) || isLidUser(normalizedJid)
 		const me = authState.creds.me
 		const isSelf =
 			me && (normalizedJid === jidNormalizedUser(me.id) || (me.lid && normalizedJid === jidNormalizedUser(me.lid)))
@@ -654,7 +654,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		if (isUserJid && !isSelf) {
 			content = await buildTcTokenFromJid({
 				authState,
-				jid,
+				jid: normalizedJid,
 				baseContent,
 				getLIDForPN: signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
 			})

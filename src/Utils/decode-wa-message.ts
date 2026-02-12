@@ -78,9 +78,10 @@ export const NACK_REASONS = {
 
 /**
  * Server-side error codes returned in ack stanzas (server → client).
- * Note: 421 and 475 overlap with the client-side NackReason enum
- * (WAWebCreateNackFromStanza), but 463 and 479 are server-specific
- * codes not present in that enum.
+ * These are distinct from the client-side NackReason enum
+ * (WAWebCreateNackFromStanza) which covers client→server nack codes.
+ * 421 and 475 happen to overlap numerically, but 463 and 479 are
+ * server-specific codes not present in the client enum.
  */
 export const SERVER_ERROR_CODES = {
 	/** Group addressing mode is stale — re-query group metadata */
