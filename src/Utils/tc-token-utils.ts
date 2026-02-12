@@ -9,7 +9,7 @@ const TC_TOKEN_NUM_BUCKETS = 4
 
 /**
  * Check if a received token is expired using WA Web's rolling bucket algorithm.
- * Reference: WAWebTrustedContactsUtils.isTokenExpired (GysEGRAXCvh.js:37378)
+ * Reference: WAWebTrustedContactsUtils.isTokenExpired
  *
  * Uses Receiver mode constants (tctoken_duration, tctoken_num_buckets).
  * NOTE: WA Web distinguishes Sender vs Receiver mode via AB props
@@ -30,7 +30,7 @@ export function isTcTokenExpired(timestamp: number | string | undefined): boolea
 
 /**
  * Check if we should issue a new token to this contact (bucket boundary crossed).
- * Reference: WAWebTrustedContactsUtils.shouldSendNewToken (GysEGRAXCvh.js:37389)
+ * Reference: WAWebTrustedContactsUtils.shouldSendNewToken
  *
  * Returns true if senderTimestamp is null/undefined or in a previous bucket.
  */

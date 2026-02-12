@@ -78,7 +78,9 @@ export const NACK_REASONS = {
 
 /**
  * Server-side error codes returned in ack stanzas (server → client).
- * Reference: WA Web NackReason codes (GysEGRAXCvh.js:35545)
+ * Note: 421 and 475 overlap with the client-side NackReason enum
+ * (WAWebCreateNackFromStanza), but 463 and 479 are server-specific
+ * codes not present in that enum.
  */
 export const SERVER_ERROR_CODES = {
 	/** Group addressing mode is stale — re-query group metadata */

@@ -354,7 +354,7 @@ export const getStatusFromReceiptType = (type: string | undefined) => {
 
 /**
  * Parse stream:error node and map to a DisconnectReason.
- * Matches WA Web's WAWebHandleStreamError parser (5Yec01dI04o.js:26392).
+ * Matches WA Web's WAWebHandleStreamError parser.
  *
  * Stream error types:
  * - conflict[@type=replaced] → connectionReplaced (session opened elsewhere)
@@ -369,7 +369,7 @@ export const getErrorCodeFromStreamError = (node: BinaryNode) => {
 
 	// 1. Conflict child — check type attribute
 	// WA Web: 'replaced' is explicit, everything else (including 'device_removed') is the default
-	// Reference: WAWebHandleStreamError parser (5Yec01dI04o.js:26397)
+	// Reference: WAWebHandleStreamError parser
 	if (reasonNode?.tag === 'conflict') {
 		const conflictType = reasonNode.attrs?.type
 		if (conflictType === 'replaced') {

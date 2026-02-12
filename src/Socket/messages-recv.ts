@@ -576,7 +576,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 			if (result.action === 'session_refreshed') {
 				// Re-issue tctoken after identity change if we previously issued one
-				// Matches WAWebSendTcTokenWhenDeviceIdentityChange (GysEGRAXCvh.js:37408)
+				// Matches WAWebSendTcTokenWhenDeviceIdentityChange
 				try {
 					const normalizedJid = jidNormalizedUser(from)
 					const tcJid = await resolveTcTokenJid(
@@ -589,7 +589,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					// Only re-issue if we previously sent a token AND it's still valid
 					if (senderTs !== null && senderTs !== undefined && !isTcTokenExpired(senderTs)) {
 						logger.debug({ jid: normalizedJid, senderTimestamp: senderTs }, 'identity changed, re-issuing tctoken')
-						// Pass original senderTimestamp to match WA Web (GysEGRAXCvh.js:37434)
+						// Pass original senderTimestamp to match WA Web
 						getPrivacyTokens([normalizedJid], senderTs).catch(err => {
 							logger.debug(
 								{ jid: normalizedJid, err: err?.message },
@@ -1011,6 +1011,16 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				// Preserve existing senderTimestamp to avoid racing with fire-and-forget
 				const existingData = await authState.keys.get('tctoken', [storageJid])
 				const existing = existingData[storageJid]
+
+				// Timestamp monotonicity guard — only store if incoming timestamp >= existing
+				// Matches WA Web handleIncomingTcToken
+				const existingTs = existing?.timestamp ? Number(existing.timestamp) : 0
+				const incomingTs = timestamp ? Number(timestamp) : 0
+				if (existingTs > 0 && incomingTs > 0 && existingTs > incomingTs) {
+					logger.debug({ storageJid, existingTs, incomingTs }, 'skipping tctoken store — existing timestamp is newer')
+					continue
+				}
+
 				await authState.keys.set({
 					tctoken: { [storageJid]: { ...existing, token: Buffer.from(content), timestamp } }
 				})
@@ -1037,10 +1047,19 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const rawJid = jidNormalizedUser(tokenNode.attrs.jid || fallbackJid)
 			const storageJid = await resolveTcTokenJid(rawJid, getLID)
 			const existingTcData = await authState.keys.get('tctoken', [storageJid])
+			const existingEntry = existingTcData[storageJid]
+
+			// Timestamp monotonicity guard — matches WA Web handleIncomingTcToken
+			const existingTs = existingEntry?.timestamp ? Number(existingEntry.timestamp) : 0
+			const incomingTs = tokenNode.attrs.t ? Number(tokenNode.attrs.t) : 0
+			if (existingTs > 0 && incomingTs > 0 && existingTs > incomingTs) {
+				continue
+			}
+
 			await authState.keys.set({
 				tctoken: {
 					[storageJid]: {
-						...existingTcData[storageJid],
+						...existingEntry,
 						token: Buffer.from(tokenNode.content),
 						timestamp: tokenNode.attrs.t
 					}
@@ -1837,7 +1856,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 
 		// Prune expired tctokens when coming online, at most once per 24 hours
-		// Matches WA Web's CLEAN_TC_TOKENS task (3JJWKHeu5-P.js:63980)
+		// Matches WA Web's CLEAN_TC_TOKENS task
 		// Note: don't gate on tcTokenKnownJids.size — the index may still be loading
 		if (isOnline) {
 			const now = Date.now()
