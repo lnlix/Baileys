@@ -639,7 +639,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const profilePictureUrl = async (jid: string, type: 'preview' | 'image' = 'preview', timeoutMs?: number) => {
 		const baseContent: BinaryNode[] = [{ tag: 'picture', attrs: { type, query: 'url' } }]
 
-		const tcTokenContent = await buildTcTokenFromJid({ authState, jid, baseContent })
+		const tcTokenContent = await buildTcTokenFromJid({
+			authState,
+			jid,
+			baseContent,
+			getLIDForPN: signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+		})
 
 		jid = jidNormalizedUser(jid)
 		const result = await query(
@@ -728,7 +733,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	 * @param tcToken token for subscription, use if present
 	 */
 	const presenceSubscribe = async (toJid: string) => {
-		const tcTokenContent = await buildTcTokenFromJid({ authState, jid: toJid })
+		const tcTokenContent = await buildTcTokenFromJid({
+			authState,
+			jid: toJid,
+			getLIDForPN: signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+		})
 
 		return sendNode({
 			tag: 'presence',

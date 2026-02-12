@@ -1,5 +1,6 @@
 import type { SignalKeyStoreWithTransaction } from '../Types'
 import type { BinaryNode } from '../WABinary'
+import { isLidUser } from '../WABinary'
 
 /** 7 days in seconds — matches WA Web AB prop tctoken_duration */
 const TC_TOKEN_BUCKET_DURATION = 604800
@@ -41,28 +42,51 @@ export function shouldSendNewTcToken(senderTimestamp: number | undefined): boole
 	return currentBucket > senderBucket
 }
 
+/**
+ * Resolve a JID to its LID for tctoken storage, mirroring how Signal sessions
+ * use LID keys via resolveLIDSignalAddress.
+ *
+ * WA Web always resolves to LID before storing/looking up tctokens:
+ * `senderLid ?? toLid(from)` (WAWebSetTcTokenChatAction.handleIncomingTcToken)
+ *
+ * @param jid - The JID to resolve (can be PN or LID)
+ * @param getLIDForPN - Resolver function (from lidMapping)
+ * @returns The LID if mapping exists, otherwise the original JID
+ */
+export async function resolveTcTokenJid(
+	jid: string,
+	getLIDForPN: (pn: string) => Promise<string | null>
+): Promise<string> {
+	if (isLidUser(jid)) return jid
+	const lid = await getLIDForPN(jid)
+	return lid ?? jid
+}
+
 type TcTokenParams = {
 	jid: string
 	baseContent?: BinaryNode[]
 	authState: {
 		keys: SignalKeyStoreWithTransaction
 	}
+	getLIDForPN?: (pn: string) => Promise<string | null>
 }
 
 export async function buildTcTokenFromJid({
 	authState,
 	jid,
-	baseContent = []
+	baseContent = [],
+	getLIDForPN
 }: TcTokenParams): Promise<BinaryNode[] | undefined> {
 	try {
-		const tcTokenData = await authState.keys.get('tctoken', [jid])
-		const entry = tcTokenData?.[jid]
+		const storageJid = getLIDForPN ? await resolveTcTokenJid(jid, getLIDForPN) : jid
+		const tcTokenData = await authState.keys.get('tctoken', [storageJid])
+		const entry = tcTokenData?.[storageJid]
 		const tcTokenBuffer = entry?.token
 
 		if (!tcTokenBuffer?.length || isTcTokenExpired(entry?.timestamp)) {
 			// Opportunistic cleanup: remove expired token from store
 			if (tcTokenBuffer) {
-				await authState.keys.set({ tctoken: { [jid]: null } })
+				await authState.keys.set({ tctoken: { [storageJid]: null } })
 			}
 
 			return baseContent.length > 0 ? baseContent : undefined

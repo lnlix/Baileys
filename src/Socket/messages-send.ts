@@ -36,7 +36,7 @@ import {
 import { getUrlInfo } from '../Utils/link-preview'
 import { makeKeyedMutex } from '../Utils/make-mutex'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
-import { isTcTokenExpired, shouldSendNewTcToken } from '../Utils/tc-token-utils'
+import { isTcTokenExpired, resolveTcTokenJid, shouldSendNewTcToken } from '../Utils/tc-token-utils'
 import {
 	areJidsSameUser,
 	type BinaryNode,
@@ -1017,8 +1017,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			const is1on1Send = !isGroup && !isRetryResend && !isStatus && !isNewsletter
 			let didFetchTcToken = false
 
-			const contactTcTokenData = is1on1Send ? await authState.keys.get('tctoken', [destinationJid]) : {}
-			const existingTokenEntry = contactTcTokenData[destinationJid]
+			// Resolve destination to LID for tctoken storage — matches Signal session key pattern
+			const tcTokenJid = is1on1Send
+				? await resolveTcTokenJid(
+						destinationJid,
+						signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+					)
+				: destinationJid
+			const contactTcTokenData = is1on1Send ? await authState.keys.get('tctoken', [tcTokenJid]) : {}
+			const existingTokenEntry = contactTcTokenData[tcTokenJid]
 			let tcTokenBuffer = existingTokenEntry?.token
 
 			// Treat expired tokens the same as missing — re-fetch from server
@@ -1029,7 +1036,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				)
 				tcTokenBuffer = undefined
 				// Opportunistic cleanup: remove expired token from store
-				Promise.resolve(authState.keys.set({ tctoken: { [destinationJid]: null } })).catch(() => {})
+				Promise.resolve(authState.keys.set({ tctoken: { [tcTokenJid]: null } })).catch(() => {})
 			}
 
 			// If tctoken is missing or expired for a 1:1 send, proactively fetch it from the server
@@ -1039,18 +1046,22 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					didFetchTcToken = true
 					const result = await getPrivacyTokens([destinationJid])
 
-					// Try to parse token from IQ response
+					// Try to parse token from IQ response (store under LID)
 					const tokensNode = getBinaryNodeChild(result, 'tokens')
 					if (tokensNode) {
 						const tokenNodes = getBinaryNodeChildren(tokensNode, 'token')
 						for (const tokenNode of tokenNodes) {
 							if (tokenNode.attrs.type === 'trusted_contact' && tokenNode.content instanceof Uint8Array) {
-								const tokenJid = jidNormalizedUser(tokenNode.attrs.jid || destinationJid)
-								const existingTcData = await authState.keys.get('tctoken', [tokenJid])
+								const rawJid = jidNormalizedUser(tokenNode.attrs.jid || destinationJid)
+								const resolvedJid = await resolveTcTokenJid(
+									rawJid,
+									signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+								)
+								const existingTcData = await authState.keys.get('tctoken', [resolvedJid])
 								await authState.keys.set({
 									tctoken: {
-										[tokenJid]: {
-											...existingTcData[tokenJid],
+										[resolvedJid]: {
+											...existingTcData[resolvedJid],
 											token: Buffer.from(tokenNode.content),
 											timestamp: tokenNode.attrs.t
 										}
@@ -1060,9 +1071,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						}
 					}
 
-					// Re-read from key store (may have been populated from IQ response or notification)
-					const refreshed = await authState.keys.get('tctoken', [destinationJid])
-					tcTokenBuffer = refreshed[destinationJid]?.token
+					// Re-read from key store (already resolved to LID via tcTokenJid)
+					const refreshed = await authState.keys.get('tctoken', [tcTokenJid])
+					tcTokenBuffer = refreshed[tcTokenJid]?.token
 				} catch (err: any) {
 					logger.warn({ jid: destinationJid, trace: err?.stack }, 'failed to fetch privacy token before send')
 				}
@@ -1093,7 +1104,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				if (existingTokenEntry?.token?.length) {
 					await authState.keys.set({
 						tctoken: {
-							[destinationJid]: {
+							[tcTokenJid]: {
 								...existingTokenEntry,
 								senderTimestamp: issueTimestamp
 							}

@@ -51,7 +51,7 @@ import {
 	xmppSignedPreKey
 } from '../Utils'
 import { makeMutex } from '../Utils/make-mutex'
-import { isTcTokenExpired } from '../Utils/tc-token-utils'
+import { isTcTokenExpired, resolveTcTokenJid } from '../Utils/tc-token-utils'
 import {
 	areJidsSameUser,
 	type BinaryNode,
@@ -579,8 +579,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				// Matches WAWebSendTcTokenWhenDeviceIdentityChange (GysEGRAXCvh.js:37408)
 				try {
 					const normalizedJid = jidNormalizedUser(from)
-					const tcTokenData = await authState.keys.get('tctoken', [normalizedJid])
-					const senderTs = tcTokenData?.[normalizedJid]?.senderTimestamp
+					const tcJid = await resolveTcTokenJid(
+						normalizedJid,
+						signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+					)
+					const tcTokenData = await authState.keys.get('tctoken', [tcJid])
+					const senderTs = tcTokenData?.[tcJid]?.senderTimestamp
 
 					// Only re-issue if we previously sent a token AND it's still valid
 					if (senderTs !== null && senderTs !== undefined && !isTcTokenExpired(senderTs)) {
@@ -979,6 +983,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		if (!tokensNode) return
 
+		// WA Web uses: senderLid ?? toLid(from) for the storage key
+		// The sender_lid attribute provides the LID directly when available
+		const senderLid = node.attrs.sender_lid ? jidNormalizedUser(node.attrs.sender_lid) : undefined
+		const storageJid =
+			senderLid ??
+			(await resolveTcTokenJid(from, signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)))
+
 		const tokenNodes = getBinaryNodeChildren(tokensNode, 'token')
 
 		for (const tokenNode of tokenNodes) {
@@ -990,20 +1001,21 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				logger.debug(
 					{
 						from,
+						storageJid,
 						timestamp,
 						tcToken: content
 					},
 					'received trusted contact token'
 				)
 
-				// Preserve existing senderTimestamp to avoid racing with fire-and-forget .then()
-				const existingData = await authState.keys.get('tctoken', [from])
-				const existing = existingData[from]
+				// Preserve existing senderTimestamp to avoid racing with fire-and-forget
+				const existingData = await authState.keys.get('tctoken', [storageJid])
+				const existing = existingData[storageJid]
 				await authState.keys.set({
-					tctoken: { [from]: { ...existing, token: Buffer.from(content), timestamp } }
+					tctoken: { [storageJid]: { ...existing, token: Buffer.from(content), timestamp } }
 				})
-				if (!tcTokenKnownJids.has(from)) {
-					tcTokenKnownJids.add(from)
+				if (!tcTokenKnownJids.has(storageJid)) {
+					tcTokenKnownJids.add(storageJid)
 					scheduleTcTokenIndexSave()
 				}
 			}
@@ -1015,25 +1027,27 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const tokensNode = getBinaryNodeChild(result, 'tokens')
 		if (!tokensNode) return
 
+		const getLID = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
 		const tokenNodes = getBinaryNodeChildren(tokensNode, 'token')
 		for (const tokenNode of tokenNodes) {
 			if (tokenNode.attrs.type !== 'trusted_contact' || !(tokenNode.content instanceof Uint8Array)) {
 				continue
 			}
 
-			const tokenJid = jidNormalizedUser(tokenNode.attrs.jid || fallbackJid)
-			const existingTcData = await authState.keys.get('tctoken', [tokenJid])
+			const rawJid = jidNormalizedUser(tokenNode.attrs.jid || fallbackJid)
+			const storageJid = await resolveTcTokenJid(rawJid, getLID)
+			const existingTcData = await authState.keys.get('tctoken', [storageJid])
 			await authState.keys.set({
 				tctoken: {
-					[tokenJid]: {
-						...existingTcData[tokenJid],
+					[storageJid]: {
+						...existingTcData[storageJid],
 						token: Buffer.from(tokenNode.content),
 						timestamp: tokenNode.attrs.t
 					}
 				}
 			})
-			if (!tcTokenKnownJids.has(tokenJid)) {
-				tcTokenKnownJids.add(tokenJid)
+			if (!tcTokenKnownJids.has(storageJid)) {
+				tcTokenKnownJids.add(storageJid)
 				scheduleTcTokenIndexSave()
 			}
 		}
