@@ -36,6 +36,7 @@ import {
 import { getUrlInfo } from '../Utils/link-preview'
 import { makeKeyedMutex } from '../Utils/make-mutex'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
+import { isTcTokenExpired, shouldSendNewTcToken } from '../Utils/tc-token-utils'
 import {
 	areJidsSameUser,
 	type BinaryNode,
@@ -1013,12 +1014,61 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				}
 			}
 
-			const contactTcTokenData =
-				!isGroup && !isRetryResend && !isStatus ? await authState.keys.get('tctoken', [destinationJid]) : {}
+			const is1on1Send = !isGroup && !isRetryResend && !isStatus && !isNewsletter
+			let didFetchTcToken = false
 
-			const tcTokenBuffer = contactTcTokenData[destinationJid]?.token
+			const contactTcTokenData = is1on1Send ? await authState.keys.get('tctoken', [destinationJid]) : {}
+			const existingTokenEntry = contactTcTokenData[destinationJid]
+			let tcTokenBuffer = existingTokenEntry?.token
 
-			if (tcTokenBuffer) {
+			// Treat expired tokens the same as missing — re-fetch from server
+			if (tcTokenBuffer?.length && isTcTokenExpired(existingTokenEntry?.timestamp)) {
+				logger.debug(
+					{ jid: destinationJid, timestamp: existingTokenEntry?.timestamp },
+					'tctoken expired, will re-fetch'
+				)
+				tcTokenBuffer = undefined
+				// Opportunistic cleanup: remove expired token from store
+				Promise.resolve(authState.keys.set({ tctoken: { [destinationJid]: null } })).catch(() => {})
+			}
+
+			// If tctoken is missing or expired for a 1:1 send, proactively fetch it from the server
+			if (!tcTokenBuffer?.length && is1on1Send) {
+				try {
+					logger.debug({ jid: destinationJid }, 'tctoken missing, requesting from server')
+					didFetchTcToken = true
+					const result = await getPrivacyTokens([destinationJid])
+
+					// Try to parse token from IQ response
+					const tokensNode = getBinaryNodeChild(result, 'tokens')
+					if (tokensNode) {
+						const tokenNodes = getBinaryNodeChildren(tokensNode, 'token')
+						for (const tokenNode of tokenNodes) {
+							if (tokenNode.attrs.type === 'trusted_contact' && tokenNode.content instanceof Uint8Array) {
+								const tokenJid = jidNormalizedUser(tokenNode.attrs.jid || destinationJid)
+								const existingTcData = await authState.keys.get('tctoken', [tokenJid])
+								await authState.keys.set({
+									tctoken: {
+										[tokenJid]: {
+											...existingTcData[tokenJid],
+											token: Buffer.from(tokenNode.content),
+											timestamp: tokenNode.attrs.t
+										}
+									}
+								})
+							}
+						}
+					}
+
+					// Re-read from key store (may have been populated from IQ response or notification)
+					const refreshed = await authState.keys.get('tctoken', [destinationJid])
+					tcTokenBuffer = refreshed[destinationJid]?.token
+				} catch (err: any) {
+					logger.warn({ jid: destinationJid, trace: err?.stack }, 'failed to fetch privacy token before send')
+				}
+			}
+
+			if (tcTokenBuffer?.length) {
 				;(stanza.content as BinaryNode[]).push({
 					tag: 'tctoken',
 					attrs: {},
@@ -1033,6 +1083,28 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			logger.debug({ msgId }, `sending message to ${participants.length} devices`)
 
 			await sendNode(stanza)
+
+			// Fire-and-forget: issue our token to the contact (like WA Web's sendTcToken)
+			// Only for 1:1 sends where we didn't already fetch, and only when bucket boundary crossed
+			if (is1on1Send && !didFetchTcToken && shouldSendNewTcToken(existingTokenEntry?.senderTimestamp)) {
+				const issueTimestamp = unixTimestampSeconds()
+				// Write senderTimestamp immediately inside the transaction — avoids race
+				// with the notification handler that arrives after the IQ response
+				if (existingTokenEntry?.token?.length) {
+					await authState.keys.set({
+						tctoken: {
+							[destinationJid]: {
+								...existingTokenEntry,
+								senderTimestamp: issueTimestamp
+							}
+						}
+					})
+				}
+
+				getPrivacyTokens([destinationJid]).catch(err => {
+					logger.debug({ jid: destinationJid, err: err?.message }, 'fire-and-forget tctoken issuance failed')
+				})
+			}
 
 			// Add message to retry cache if enabled
 			if (messageRetryManager && !participant) {
@@ -1107,8 +1179,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return ''
 	}
 
-	const getPrivacyTokens = async (jids: string[]) => {
-		const t = unixTimestampSeconds().toString()
+	const getPrivacyTokens = async (jids: string[], timestamp?: number) => {
+		const t = (timestamp ?? unixTimestampSeconds()).toString()
 		const result = await query({
 			tag: 'iq',
 			attrs: {
