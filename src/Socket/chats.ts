@@ -48,6 +48,8 @@ import {
 	type BinaryNode,
 	getBinaryNodeChild,
 	getBinaryNodeChildren,
+	isLidUser,
+	isPnUser,
 	jidDecode,
 	jidNormalizedUser,
 	reduceBinaryNodeToDictionary,
@@ -639,7 +641,24 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const profilePictureUrl = async (jid: string, type: 'preview' | 'image' = 'preview', timeoutMs?: number) => {
 		const baseContent: BinaryNode[] = [{ tag: 'picture', attrs: { type, query: 'url' } }]
 
-		const tcTokenContent = await buildTcTokenFromJid({ authState, jid, baseContent })
+		// WA Web only includes tctoken for user JIDs (not groups/newsletters)
+		// and never for own profile pic (Chat model for self has no tcToken).
+		// Including tctoken for own JID causes the server to never respond.
+		const isUserJid = isPnUser(jid) || isLidUser(jid)
+		const normalizedJid = jidNormalizedUser(jid)
+		const me = authState.creds.me
+		const isSelf =
+			me && (normalizedJid === jidNormalizedUser(me.id) || (me.lid && normalizedJid === jidNormalizedUser(me.lid)))
+		let content: BinaryNode[] | undefined = baseContent
+
+		if (isUserJid && !isSelf) {
+			content = await buildTcTokenFromJid({
+				authState,
+				jid,
+				baseContent,
+				getLIDForPN: signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+			})
+		}
 
 		jid = jidNormalizedUser(jid)
 		const result = await query(
@@ -651,7 +670,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					type: 'get',
 					xmlns: 'w:profile:picture'
 				},
-				content: tcTokenContent
+				content
 			},
 			timeoutMs
 		)
@@ -728,7 +747,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	 * @param tcToken token for subscription, use if present
 	 */
 	const presenceSubscribe = async (toJid: string) => {
-		const tcTokenContent = await buildTcTokenFromJid({ authState, jid: toJid })
+		const tcTokenContent = await buildTcTokenFromJid({
+			authState,
+			jid: toJid,
+			getLIDForPN: signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+		})
 
 		return sendNode({
 			tag: 'presence',
