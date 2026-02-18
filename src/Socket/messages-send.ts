@@ -1296,8 +1296,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					} else {
 						additionalAttributes.edit = '7'
 					}
+					if (isJidNewsletter(jid)){
+						additionalAttributes.edit = '8'
+					}
 				} else if (isEditMsg) {
 					additionalAttributes.edit = '1'
+					if (isJidNewsletter(jid)){
+						additionalAttributes.edit = '3'
+					}
 				} else if (isPinMsg) {
 					additionalAttributes.edit = '2'
 				} else if (isPollMessage) {
