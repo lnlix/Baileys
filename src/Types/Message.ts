@@ -175,6 +175,8 @@ export type AnyMediaMessageContent = (
 			jpegThumbnail?: string
 			/** if set to true, will send as a `video note` */
 			ptv?: boolean
+			/** optionally tell the duration of the video */
+			seconds?: number
 	  } & Mentionable &
 			Contextable &
 			WithDimensions)

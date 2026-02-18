@@ -515,7 +515,7 @@ export const generateWAMessageContent = async (
 				break
 		}
 	} else if (hasOptionalProperty(message, 'ptv') && message.ptv) {
-		const { videoMessage } = await prepareWAMessageMedia({ video: message.video }, options)
+		const { videoMessage } = await prepareWAMessageMedia({ video: message.video, seconds: message.seconds }, options)
 		m.ptvMessage = videoMessage
 	} else if (hasNonNullishProperty(message, 'product')) {
 		const { imageMessage } = await prepareWAMessageMedia({ image: message.product.productImage }, options)
