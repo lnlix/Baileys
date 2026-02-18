@@ -651,6 +651,14 @@ export const generateWAMessageContent = async (
 				type: WAProto.Message.ProtocolMessage.Type.MESSAGE_EDIT
 			}
 		}
+
+		if (isJidNewsletter(options.jid)) {
+			m = {
+				editedMessage: {
+					message: m,
+				}
+			}
+		}
 	}
 
 	if (hasOptionalProperty(message, 'contextInfo') && !!message.contextInfo) {
