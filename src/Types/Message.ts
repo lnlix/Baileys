@@ -124,6 +124,7 @@ type ViewOnce = {
 
 type Editable = {
 	edit?: WAMessageKey
+	editedMessage?: proto.Message
 }
 type WithDimensions = {
 	width?: number
