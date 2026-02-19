@@ -638,8 +638,14 @@ export const makeSocket = (config: SocketConfig) => {
 
 		if (!ws.isClosed && !ws.isClosing) {
 			try {
+				ws.on('error', err => {
+					logger.error({ err: err })
+				})
 				await ws.close()
 			} catch {}
+			finally {
+				ws.removeAllListeners('error')
+			}
 		}
 
 		ev.emit('connection.update', {
