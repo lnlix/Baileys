@@ -38,7 +38,12 @@ import {
 import { getUrlInfo } from '../Utils/link-preview'
 import { makeKeyedMutex } from '../Utils/make-mutex'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
-import { isTcTokenExpired, resolveTcTokenJid, shouldSendNewTcToken } from '../Utils/tc-token-utils'
+import {
+	isTcTokenExpired,
+	resolveTcTokenJid,
+	shouldSendNewTcToken,
+	storeTcTokensFromIqResult
+} from '../Utils/tc-token-utils'
 import {
 	areJidsSameUser,
 	type BinaryNode,
@@ -1028,7 +1033,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 
 			const is1on1Send = !isGroup && !isRetryResend && !isStatus && !isNewsletter
-			let didFetchTcToken = false
 
 			// Resolve destination to LID for tctoken storage — matches Signal session key pattern
 			const tcTokenJid = is1on1Send
@@ -1041,7 +1045,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			const existingTokenEntry = contactTcTokenData[tcTokenJid]
 			let tcTokenBuffer = existingTokenEntry?.token
 
-			// Treat expired tokens the same as missing — re-fetch from server
+			// Treat expired tokens the same as missing — clear from cache
 			if (tcTokenBuffer?.length && isTcTokenExpired(existingTokenEntry?.timestamp)) {
 				logger.debug(
 					{ jid: destinationJid, timestamp: existingTokenEntry?.timestamp },
@@ -1049,26 +1053,29 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				)
 				tcTokenBuffer = undefined
 				// Opportunistic cleanup: remove expired token from store
-				Promise.resolve(authState.keys.set({ tctoken: { [tcTokenJid]: null } })).catch(() => {})
+				try {
+					await authState.keys.set({ tctoken: { [tcTokenJid]: null } })
+				} catch {
+					/* ignore cleanup errors */
+				}
 			}
 
-			// If tctoken is missing or expired for a 1:1 send, proactively fetch it from the server
+			// Like WA Web: if tctoken is missing, fire-and-forget the request so it
+			// arrives for the 463-retry (or next send). Don't block the send path.
 			if (!tcTokenBuffer?.length && is1on1Send) {
-				try {
-					logger.debug({ jid: destinationJid }, 'tctoken missing, requesting from server')
-					didFetchTcToken = true
-					// The IQ response is typically empty — actual tokens arrive via
-					// privacy_token notifications handled by handlePrivacyTokenNotification.
-					// storeTcTokensFromResult in the recv handler consolidates parsing.
-					await getPrivacyTokens([destinationJid])
-
-					// Re-read from key store — the notification handler may have
-					// stored the token during the IQ round-trip
-					const refreshed = await authState.keys.get('tctoken', [tcTokenJid])
-					tcTokenBuffer = refreshed[tcTokenJid]?.token
-				} catch (err: any) {
-					logger.warn({ jid: destinationJid, trace: err?.stack }, 'failed to fetch privacy token before send')
-				}
+				logger.debug({ jid: destinationJid }, 'tctoken missing, requesting from server (non-blocking)')
+				getPrivacyTokens([destinationJid])
+					.then(async fetchResult => {
+						await storeTcTokensFromIqResult({
+							result: fetchResult,
+							fallbackJid: destinationJid,
+							keys: authState.keys,
+							getLIDForPN: signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+						})
+					})
+					.catch(err => {
+						logger.debug({ jid: destinationJid, err: err?.message }, 'fire-and-forget tctoken fetch failed')
+					})
 			}
 
 			if (tcTokenBuffer?.length) {
@@ -1104,8 +1111,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			await sendNode(stanza)
 
 			// Fire-and-forget: issue our token to the contact (like WA Web's sendTcToken)
-			// Only for 1:1 sends where we didn't already fetch, and only when bucket boundary crossed
-			if (is1on1Send && !didFetchTcToken && shouldSendNewTcToken(existingTokenEntry?.senderTimestamp)) {
+			// Only for 1:1 sends where we already have a token, and only when bucket boundary crossed.
+			// When tctoken was missing, the non-blocking fetch above already called getPrivacyTokens.
+			if (is1on1Send && tcTokenBuffer?.length && shouldSendNewTcToken(existingTokenEntry?.senderTimestamp)) {
 				const issueTimestamp = unixTimestampSeconds()
 				// WA Web writes senderTimestamp only AFTER the IQ succeeds
 				// (WAWebSendTcTokenChatAction.sendTcToken).

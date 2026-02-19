@@ -1,6 +1,6 @@
 import type { SignalKeyStoreWithTransaction } from '../Types'
 import type { BinaryNode } from '../WABinary'
-import { isLidUser } from '../WABinary'
+import { getBinaryNodeChild, getBinaryNodeChildren, isLidUser, jidNormalizedUser } from '../WABinary'
 
 /** 7 days in seconds — matches WA Web AB prop tctoken_duration */
 const TC_TOKEN_BUCKET_DURATION = 604800
@@ -17,7 +17,7 @@ const TC_TOKEN_NUM_BUCKETS = 4
  * use identical values (604800 / 4), so we use a single function for both.
  * If WA ever diverges these, add a `mode` parameter here.
  */
-export function isTcTokenExpired(timestamp: number | string | undefined): boolean {
+export function isTcTokenExpired(timestamp: number | string | null | undefined): boolean {
 	if (timestamp === null || timestamp === undefined) return true
 	const ts = typeof timestamp === 'string' ? parseInt(timestamp) : timestamp
 	if (isNaN(ts)) return true
@@ -101,5 +101,61 @@ export async function buildTcTokenFromJid({
 		return baseContent
 	} catch (error) {
 		return baseContent.length > 0 ? baseContent : undefined
+	}
+}
+
+type StoreTcTokensParams = {
+	result: BinaryNode
+	fallbackJid: string
+	keys: SignalKeyStoreWithTransaction
+	getLIDForPN: (pn: string) => Promise<string | null>
+	/** Optional callback when a new JID is stored (for index tracking) */
+	onNewJidStored?: (jid: string) => void
+}
+
+/**
+ * Parse and store tctoken(s) from an IQ result node.
+ * Includes timestamp monotonicity guard matching WA Web's handleIncomingTcToken.
+ * Used by both the blocking fetch (messages-send) and IQ response (messages-recv) paths.
+ */
+export async function storeTcTokensFromIqResult({
+	result,
+	fallbackJid,
+	keys,
+	getLIDForPN,
+	onNewJidStored
+}: StoreTcTokensParams) {
+	const tokensNode = getBinaryNodeChild(result, 'tokens')
+	if (!tokensNode) return
+
+	const tokenNodes = getBinaryNodeChildren(tokensNode, 'token')
+	for (const tokenNode of tokenNodes) {
+		if (tokenNode.attrs.type !== 'trusted_contact' || !(tokenNode.content instanceof Uint8Array)) {
+			continue
+		}
+
+		const rawJid = jidNormalizedUser(tokenNode.attrs.jid || fallbackJid)
+		const storageJid = await resolveTcTokenJid(rawJid, getLIDForPN)
+		const existingTcData = await keys.get('tctoken', [storageJid])
+		const existingEntry = existingTcData[storageJid]
+
+		// Timestamp monotonicity guard — only store if incoming timestamp >= existing
+		// Matches WA Web handleIncomingTcToken
+		const existingTs = existingEntry?.timestamp ? Number(existingEntry.timestamp) : 0
+		const incomingTs = tokenNode.attrs.t ? Number(tokenNode.attrs.t) : 0
+		if (existingTs > 0 && incomingTs > 0 && existingTs > incomingTs) {
+			continue
+		}
+
+		await keys.set({
+			tctoken: {
+				[storageJid]: {
+					...existingEntry,
+					token: Buffer.from(tokenNode.content),
+					timestamp: tokenNode.attrs.t
+				}
+			}
+		})
+		onNewJidStored?.(storageJid)
 	}
 }
