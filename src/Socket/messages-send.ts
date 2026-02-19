@@ -2,6 +2,7 @@ import NodeCache from '@cacheable/node-cache'
 import { Boom } from '@hapi/boom'
 import { proto } from '../../WAProto/index.js'
 import { DEFAULT_CACHE_TTLS, WA_DEFAULT_EPHEMERAL } from '../Defaults'
+import { batched } from '../Utils/batched'
 import type {
 	AnyMessageContent,
 	MediaConnInfo,
@@ -25,6 +26,7 @@ import {
 	generateMessageIDV2,
 	generateParticipantHashV2,
 	generateWAMessage,
+	getContentType,
 	getStatusCodeForMediaRetry,
 	getUrlFromDirectPath,
 	getWAUploadToServer,
@@ -47,6 +49,7 @@ import {
 	isHostedPnUser,
 	isJidGroup,
 	isLidUser,
+	isJidNewsletter,
 	isPnUser,
 	jidDecode,
 	jidEncode,
@@ -56,6 +59,8 @@ import {
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeNewsletterSocket } from './newsletter'
+
+const BATCH_JID_SIZE = 5_000
 
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
@@ -212,7 +217,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	}
 
 	/** Fetch all the devices we've to send a message to */
-	const getUSyncDevices = async (
+	let getUSyncDevices = async (
 		jids: string[],
 		useCache: boolean,
 		ignoreZeroDevices: boolean
@@ -414,7 +419,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		)
 	}
 
-	const assertSessions = async (jids: string[], force?: boolean) => {
+	getUSyncDevices = batched(getUSyncDevices, BATCH_JID_SIZE, (results: JidWithDevice[][]) => results.flat())
+
+	let assertSessions = async (jids: string[], force?: boolean) => {
 		let didFetchNewSession = false
 		const uniqueJids = [...new Set(jids)] // Deduplicate JIDs
 		const jidsRequiringFetch: string[] = []
@@ -484,6 +491,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		return didFetchNewSession
 	}
+
+	// batch processing, return true if any
+	assertSessions = batched(assertSessions, BATCH_JID_SIZE, (results: boolean[]) => results.some(Boolean))
 
 	const sendPeerDataOperationMessage = async (
 		pdoMessage: proto.Message.IPeerDataOperationRequestMessage
@@ -671,7 +681,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				const bytes = encodeNewsletterMessage(patched as proto.IMessage)
 				binaryNodeContent.push({
 					tag: 'plaintext',
-					attrs: {},
+					attrs: extraAttrs,
 					content: bytes
 				})
 				const stanza: BinaryNode = {
@@ -683,6 +693,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						...(additionalAttributes || {})
 					},
 					content: binaryNodeContent
+				}
+				if (additionalNodes && additionalNodes.length > 0) {
+					;(stanza.content as BinaryNode[]).push(...additionalNodes)
 				}
 				logger.debug({ msgId }, `sending newsletter message to ${jid}`)
 				await sendNode(stanza)
@@ -1030,6 +1043,22 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				;(stanza.content as BinaryNode[]).push(...additionalNodes)
 			}
 
+			const content = normalizeMessageContent(message)!
+			const contentType = getContentType(content)!
+			// List only in DM
+			if((isPnUser(jid) || isLidUser(jid)) && contentType === 'listMessage'){
+				const bizNode: BinaryNode = { tag: 'biz', attrs: {} }
+				bizNode.content = [{
+					tag: 'list',
+					attrs: {
+						type: 'product_list',
+						v: '2'
+					}
+				}];
+
+				(stanza.content as BinaryNode[]).push(bizNode)
+			}
+
 			logger.debug({ msgId }, `sending message to ${participants.length} devices`)
 
 			await sendNode(stanza)
@@ -1219,6 +1248,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						: disappearingMessagesInChat
 				await groupToggleEphemeral(jid, value)
 			} else {
+
+				// Newsletter fix for media
+				let mediaHandle = null
+				const waUploadToServerMediaHandle = async (encFilePath: any, opts: any) => {
+					opts.newsletter = isJidNewsletter(jid)
+					const result = await (waUploadToServer as any)(encFilePath, opts);
+					mediaHandle = result.handle;
+					return result;
+				};
+
 				const fullMsg = await generateWAMessage(jid, content, {
 					logger,
 					userJid,
@@ -1230,12 +1269,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 								...(httpRequestOptions || {})
 							},
 							logger,
-							uploadImage: generateHighQualityLinkPreview ? waUploadToServer : undefined
+							uploadImage:
+								generateHighQualityLinkPreview || options.linkPreviewHighQuality ? waUploadToServer : undefined
 						}),
 					//TODO: CACHE
 					getProfilePicUrl: sock.profilePictureUrl,
 					getCallLink: sock.createCallLink,
-					upload: waUploadToServer,
+					upload: waUploadToServerMediaHandle,
 					mediaCache: config.mediaCache,
 					options: config.options,
 					messageId: generateMessageIDV2(sock.user?.id),
@@ -1256,15 +1296,22 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					} else {
 						additionalAttributes.edit = '7'
 					}
+					if (isJidNewsletter(jid)){
+						additionalAttributes.edit = '8'
+					}
 				} else if (isEditMsg) {
 					additionalAttributes.edit = '1'
+					if (isJidNewsletter(jid)){
+						additionalAttributes.edit = '3'
+					}
 				} else if (isPinMsg) {
 					additionalAttributes.edit = '2'
 				} else if (isPollMessage) {
 					additionalNodes.push({
 						tag: 'meta',
 						attrs: {
-							polltype: 'creation'
+							polltype: 'creation',
+							contenttype: isJidNewsletter(jid) ? 'text' : undefined,
 						}
 					} as BinaryNode)
 				} else if (isEventMsg) {
@@ -1274,6 +1321,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							event_type: 'creation'
 						}
 					} as BinaryNode)
+				}
+
+				if (mediaHandle){
+					additionalAttributes.media_id = mediaHandle
 				}
 
 				await relayMessage(jid, fullMsg.message!, {
