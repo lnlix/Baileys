@@ -921,6 +921,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	}
 
+	/** tracks message IDs that have already been retried for error 463 — prevents retry loops */
+	const tcTokenRetriedMsgIds = new Set<string>()
+
 	/** tracks JIDs for which we have stored tctokens — used for periodic pruning */
 	const tcTokenKnownJids = new Set<string>()
 
@@ -1584,14 +1587,40 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// device could not display the message
 		if (attrs.error) {
 			if (attrs.error === SERVER_ERROR_CODES.MissingTcToken) {
-				// Error 463: missing privacy token (tctoken).
-				// WA Web does NOT retry — just marks as failed. The proactive
-				// fetch in relayMessage should prevent most 463 errors; if one
-				// still occurs, the token will be available for the next send.
-				logger.warn(
-					{ msgId: attrs.id, from: attrs.from },
-					'error 463: message rejected — missing tctoken (will be available for next send)'
-				)
+				// Single retry: the original getPrivacyTokens IQ triggered token issuance.
+				// After a brief delay the server should have pushed a privacy_token
+				// notification, making the re-send succeed.
+				const msgId = attrs.id
+				const jid = attrs.from
+				if (msgId && jid && !tcTokenRetriedMsgIds.has(msgId)) {
+					// Safety cap: prevent unbounded growth in pathological scenarios
+					if (tcTokenRetriedMsgIds.size >= 500) {
+						tcTokenRetriedMsgIds.clear()
+					}
+
+					tcTokenRetriedMsgIds.add(msgId)
+					setTimeout(() => tcTokenRetriedMsgIds.delete(msgId), 60_000)
+
+					const msg = await getMessage(key)
+					if (msg) {
+						//eslint-disable-next-line max-depth
+						try {
+							await delay(1500)
+							await relayMessage(jid, msg, {
+								messageId: msgId,
+								useUserDevicesCache: true
+							})
+							logger.info({ msgId, from: jid }, 'error 463 retry succeeded')
+							return
+						} catch (retryErr: any) {
+							logger.warn({ msgId, err: retryErr?.message }, 'error 463 retry failed')
+						}
+					} else {
+						logger.warn({ msgId, from: jid }, 'error 463: no message found for retry')
+					}
+				} else if (msgId && tcTokenRetriedMsgIds.has(msgId)) {
+					logger.warn({ msgId, from: jid }, 'error 463: already retried, giving up')
+				}
 			} else if (attrs.error === SERVER_ERROR_CODES.SmaxInvalid) {
 				logger.warn(
 					{ msgId: attrs.id, from: attrs.from },
