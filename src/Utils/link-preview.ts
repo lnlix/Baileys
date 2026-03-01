@@ -217,6 +217,14 @@ const assertContentLengthWithinLimit = (response: Response, maxBytes: number) =>
 	}
 }
 
+const assertHtmlContentType = async (response: Response) => {
+	const contentType = (response.headers.get('content-type') || '').toLowerCase()
+	if (contentType && !contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')) {
+		await response.body?.cancel()
+		throw new Error(`unsupported content-type "${contentType}"`)
+	}
+}
+
 const readResponseBody = async (response: Response, maxBytes: number, abortController: AbortController) => {
 	if (!response.body) {
 		return Buffer.alloc(0)
@@ -229,24 +237,35 @@ const readResponseBody = async (response: Response, maxBytes: number, abortContr
 	for await (const chunk of stream) {
 		const buff = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
 		totalBytes += buff.length
+		chunks.push(buff)
+
 		if (totalBytes > maxBytes) {
 			abortController.abort('response limit exceeded')
 			stream.destroy()
 			throw new Error(`response exceeded ${maxBytes} bytes`)
 		}
 
-		chunks.push(buff)
+		// Early exit once we've passed the head section — all OG tags will be there
+		const partial = Buffer.concat(chunks).toString('utf8')
+		if (partial.includes('</head>') || partial.includes('<body')) {
+			abortController.abort('head section complete')
+			stream.destroy()
+			break
+		}
 	}
 
-	stream.destroy()
 	return Buffer.concat(chunks)
 }
 
 const fetchWithGuards = async (
 	input: string,
-	fetchOpts: NormalizedFetchOptions
+	fetchOpts: NormalizedFetchOptions,
+	opts: { requireHtml?: boolean } = {}
 ): Promise<{ body: Buffer; contentType: string; finalUrl: string }> => {
 	let currentUrl = new URL(input)
+
+	// Create timeout signal once so it covers the entire operation including redirects
+	const timeoutSignal = AbortSignal.timeout(fetchOpts.timeout)
 
 	for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
 		await assertSafeUrl(currentUrl)
@@ -256,7 +275,7 @@ const fetchWithGuards = async (
 			method: 'GET',
 			redirect: 'manual',
 			headers: fetchOpts.headers,
-			signal: AbortSignal.any([AbortSignal.timeout(fetchOpts.timeout), abortController.signal])
+			signal: AbortSignal.any([timeoutSignal, abortController.signal])
 		})
 
 		if (response.status >= 300 && response.status < 400) {
@@ -271,6 +290,11 @@ const fetchWithGuards = async (
 
 		if (!response.ok) {
 			throw new Error(`failed to fetch "${currentUrl}" with status ${response.status}`)
+		}
+
+		// Only enforce HTML content-type when fetching pages, not images
+		if (opts.requireHtml) {
+			await assertHtmlContentType(response)
 		}
 
 		assertContentLengthWithinLimit(response, fetchOpts.maxContentLength)
@@ -308,6 +332,13 @@ export type URLGenerationOptions = {
 	logger?: ILogger
 }
 
+const SWALLOWED_ERROR_PATTERNS = [
+	'Invalid URL',
+	'unsupported protocol',
+	'unsupported content-type',
+	'blocked',
+]
+
 /**
  * Given a piece of text, checks for any URL present, generates link preview for the same and returns it
  * Return undefined if the fetch failed or no URL was found
@@ -334,15 +365,7 @@ export const getUrlInfo = async (
 			maxContentLength: opts.fetchOpts.maxContentLength || MAX_LINK_PREVIEW_DOWNLOAD_BYTES
 		}
 
-		const { body, contentType, finalUrl } = await fetchWithGuards(previewLink, normalizedFetchOpts)
-		const lowerContentType = contentType.toLowerCase()
-		if (
-			lowerContentType &&
-			!lowerContentType.includes('text/html') &&
-			!lowerContentType.includes('application/xhtml+xml')
-		) {
-			return
-		}
+		const { body, finalUrl } = await fetchWithGuards(previewLink, normalizedFetchOpts, { requireHtml: true })
 
 		const html = body.toString('utf8')
 		const title = getMetaContent(html, ['og:title', 'twitter:title']) || getTitle(html)
@@ -398,11 +421,7 @@ export const getUrlInfo = async (
 
 		return urlInfo
 	} catch (error: any) {
-		if (
-			!error?.message?.includes('Invalid URL') &&
-			!error?.message?.includes('unsupported protocol') &&
-			!error?.message?.includes('blocked')
-		) {
+		if (!SWALLOWED_ERROR_PATTERNS.some(pattern => error?.message?.includes(pattern))) {
 			throw error
 		}
 	}
