@@ -404,6 +404,7 @@ describe('buildTcTokenFromJid', () => {
 		expect(result).toHaveLength(1)
 		const node = result![0]!
 		expect(node.tag).toBe('tctoken')
+		expect(node.attrs).toEqual({ t: RECENT_TS })
 		expect(node.content).toBe(VALID_TOKEN)
 	})
 
@@ -490,6 +491,7 @@ describe('buildTcTokenFromJid', () => {
 		expect(result![0]).toBe(existingNode)
 		const appended = result![1]!
 		expect(appended.tag).toBe('tctoken')
+		expect(appended.attrs).toEqual({ t: RECENT_TS })
 		expect(appended.content).toBe(VALID_TOKEN)
 	})
 
