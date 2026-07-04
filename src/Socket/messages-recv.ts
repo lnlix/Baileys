@@ -87,6 +87,7 @@ import {
 } from '../WABinary'
 import { extractGroupMetadata } from './groups'
 import { makeMessagesSocket } from './messages-send'
+import { handlePasskeyNotification } from './passkey-recv'
 
 type MexGqlData = Record<string, unknown>
 
@@ -133,6 +134,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		sendPeerDataOperationMessage,
 		messageRetryManager,
 		registerSocketEndHandler,
+		passkeyLinkingManager,
 		issuePrivacyTokens,
 		fetchAccountReachoutTimelock,
 		placeholderResendCache
@@ -549,6 +551,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			logger.warn('Client not connected, cannot send ack')
 			return
 		}
+
 		const stanza = buildAckStanza(node, errorCode, authState.creds.me!.id)
 		logger.debug({ recv: { tag: node.tag, attrs: node.attrs }, sent: stanza.attrs }, 'sent ack')
 		await sendNode(stanza)
@@ -1060,6 +1063,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				break
 			case 'encrypt':
 				await handleEncryptNotification(node)
+				break
+			case 'passkey_prologue_request':
+			case 'crsc_continuation':
+				await handlePasskeyNotification(node, passkeyLinkingManager)
 				break
 			case 'devices':
 				try {

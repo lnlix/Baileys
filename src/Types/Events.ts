@@ -14,12 +14,15 @@ import type {
 import type { Label } from './Label'
 import type { LabelAssociation } from './LabelAssociation'
 import type { MessageUpsertType, MessageUserReceiptUpdate, WAMessage, WAMessageKey, WAMessageUpdate } from './Message'
+import type { PasskeyLinkingUpdate } from './Passkey'
 import type { ConnectionState, NewChatMessageCapInfo } from './State'
 
 // TODO: refactor this mess
 export type BaileysEventMap = {
 	/** connection state has been updated -- WS closed, opened, connecting etc. */
 	'connection.update': Partial<ConnectionState>
+	/** passkey/shortcake linking lifecycle updates for experimental device linking */
+	'passkey.update': PasskeyLinkingUpdate
 	/** credentials updated -- some metadata, keys or something */
 	'creds.update': Partial<AuthenticationCreds>
 	/** set chats (history sync), everything is reverse chronologically sorted */

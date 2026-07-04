@@ -44,6 +44,7 @@ import {
 	signedKeyPair,
 	xmppSignedPreKey
 } from '../Utils'
+import { PasskeyLinkingManager } from '../Utils/passkey-linking-manager'
 import {
 	assertNodeErrorFree,
 	type BinaryNode,
@@ -128,6 +129,7 @@ export const makeSocket = (config: SocketConfig) => {
 	})
 
 	const ws = new WebSocketClient(url, config)
+	let connectionValidated = false
 
 	ws.connect()
 
@@ -379,6 +381,14 @@ export const makeSocket = (config: SocketConfig) => {
 	// add transaction capability
 	const keys = addTransactionCapability(authState.keys, logger, transactionOpts)
 	const signalRepository = makeSignalRepository({ creds, keys }, logger, pnFromLIDUSync)
+	const passkeyLinkingManager = new PasskeyLinkingManager({
+		authState,
+		query,
+		ev,
+		logger,
+		browser,
+		generateMessageTag
+	})
 
 	let lastDateRecv: Date
 	let epoch = 1
@@ -691,6 +701,27 @@ export const makeSocket = (config: SocketConfig) => {
 		})
 	}
 
+	const waitForConnectionValidated = async () => {
+		await waitForSocketOpen()
+		if (connectionValidated) {
+			return
+		}
+
+		let onValidated: () => void
+		let onClose: (err: Error) => void
+		await new Promise<void>((resolve, reject) => {
+			onValidated = () => resolve()
+			onClose = mapWebSocketError(reject)
+			ws.on('connection-validated', onValidated)
+			ws.on('close', onClose)
+			ws.on('error', onClose)
+		}).finally(() => {
+			ws.off('connection-validated', onValidated)
+			ws.off('close', onClose)
+			ws.off('error', onClose)
+		})
+	}
+
 	const startKeepAliveRequest = () =>
 		(keepAliveReq = setInterval(() => {
 			if (!lastDateRecv) {
@@ -825,6 +856,24 @@ export const makeSocket = (config: SocketConfig) => {
 		return authState.creds.pairingCode
 	}
 
+	const requestForcedPasskeyLogin = async () => {
+		if (authState.creds.me) {
+			return
+		}
+
+		try {
+			await waitForConnectionValidated()
+			return await passkeyLinkingManager.requestForcedPasskeyLogin()
+		} catch (error: any) {
+			passkeyLinkingManager.clearLinkingInProgress()
+			ev.emit('passkey.update', {
+				type: 'error',
+				error
+			})
+			return undefined
+		}
+	}
+
 	async function generatePairingKey() {
 		const salt = randomBytes(32)
 		const randomIv = randomBytes(16)
@@ -856,6 +905,8 @@ export const makeSocket = (config: SocketConfig) => {
 	ws.on('open', async () => {
 		try {
 			await validateConnection()
+			connectionValidated = true
+			ws.emit('connection-validated')
 		} catch (err: any) {
 			logger.error({ err }, 'error in validating connection')
 			void end(err)
@@ -894,6 +945,11 @@ export const makeSocket = (config: SocketConfig) => {
 
 			const refNode = refNodes.shift()
 			if (!refNode) {
+				if (passkeyLinkingManager.isLinkingInProgress) {
+					logger.info('QR refs ended while passkey linking is in progress; keeping socket open')
+					return
+				}
+
 				void end(new Boom('QR refs attempts ended', { statusCode: DisconnectReason.timedOut }))
 				return
 			}
@@ -951,6 +1007,7 @@ export const makeSocket = (config: SocketConfig) => {
 
 		logger.info('opened connection to WA')
 		clearTimeout(qrTimer) // will never happen in all likelyhood -- but just in case WA sends success on first try
+		passkeyLinkingManager.clearLinkingInProgress()
 
 		ev.emit('creds.update', { me: { ...authState.creds.me!, lid: node.attrs.lid } })
 
@@ -1170,12 +1227,20 @@ export const makeSocket = (config: SocketConfig) => {
 		logout,
 		end,
 		registerSocketEndHandler,
+		passkeyLinkingManager,
 		onUnexpectedError,
 		uploadPreKeys,
 		uploadPreKeysToServerIfRequired,
 		digestKeyBundle,
 		rotateSignedPreKey,
 		requestPairingCode,
+		requestPasskeyRequestOptions: passkeyLinkingManager.requestPasskeyRequestOptions,
+		requestForcedPasskeyLogin,
+		sendPasskeyResponse: passkeyLinkingManager.sendPasskeyResponse,
+		sendPasskeyConfirmation: passkeyLinkingManager.sendPasskeyConfirmation,
+		sendPasskeyPrologue: passkeyLinkingManager.sendPasskeyPrologue,
+		sendPasskeyCompanionNonce: passkeyLinkingManager.sendPasskeyCompanionNonce,
+		sendPasskeyEncryptedPairingRequest: passkeyLinkingManager.sendPasskeyEncryptedPairingRequest,
 		updateServerTimeOffset,
 		sendUnifiedSession,
 		wamBuffer: publicWAMBuffer,
