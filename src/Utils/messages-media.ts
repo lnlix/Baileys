@@ -467,8 +467,9 @@ export const encryptedStream = async (
 		originalFileStream?.end?.()
 		if (encFileWriteStream) {
 			// Wait for the 'finish' event, which signifies that all data has been flushed to the underlying system.
-			await once(encFileWriteStream!, 'finish')
+			await once(encFileWriteStream, 'finish')
 		}
+
 		stream.destroy()
 
 		// Wait for write streams to fully flush to disk
@@ -542,7 +543,7 @@ export const downloadContentFromMessage = async (
 	{ mediaKey, directPath, url }: DownloadableMessage,
 	type: MediaType,
 	opts: MediaDownloadOptions = {},
-	decrypt: boolean = true
+	decrypt = true
 ) => {
 	// Fallback host: explicit opt > host parsed from `url` > DEF_MEDIA_HOST.
 	// Lets us honor a non-default host carried by the proto without forcing callers to thread it through.
@@ -551,6 +552,7 @@ export const downloadContentFromMessage = async (
 	if (!downloadUrl) {
 		throw new Boom('No valid media URL or directPath present in message', { statusCode: 400 })
 	}
+
 	if (!decrypt) {
 		return getHttpStream(downloadUrl, opts.options)
 	}
@@ -846,7 +848,9 @@ export const getWAUploadToServer = (
 		// send a query JSON to obtain the url & auth token to upload our media
 		let uploadInfo = await refreshMediaConn(false)
 
-		let urls: { mediaUrl: string; directPath: string; meta_hmac?: string; ts?: number; fbid?: number, handle?: string } | undefined
+		let urls:
+			| { mediaUrl: string; directPath: string; meta_hmac?: string; ts?: number; fbid?: number; handle?: string }
+			| undefined
 		const hosts = [...customUploadHosts, ...uploadInfo.hosts]
 
 		fileEncSha256B64 = encodeBase64EncodedStringForUpload(fileEncSha256B64)
@@ -909,10 +913,10 @@ export const getWAUploadToServer = (
 						cause_code: error?.cause?.code,
 						cause_errno: error?.cause?.errno,
 						cause_message: error?.cause?.message,
-						stack: error?.stack,
+						stack: error?.stack
 					},
 					`Upload for '${hostname}' failed`
-				);
+				)
 				logger.warn(
 					{ trace: error?.stack, uploadResult: result },
 					`Error in uploading to ${hostname} ${isLast ? '' : ', retrying...'}`
@@ -923,7 +927,8 @@ export const getWAUploadToServer = (
 		if (!urls) {
 			throw new Boom('Media upload failed on all hosts', { statusCode: 500 })
 		}
-		logger.debug(urls, "Successfully uploaded media files")
+
+		logger.debug(urls, 'Successfully uploaded media files')
 		return urls
 	}
 }

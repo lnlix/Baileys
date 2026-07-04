@@ -1,10 +1,10 @@
+import { lookup } from 'dns/promises'
+import { isIP } from 'net'
+import { Readable } from 'stream'
 import type { WAMediaUploadFunction, WAUrlInfo } from '../Types'
 import type { ILogger } from './logger'
 import { prepareWAMessageMedia } from './messages'
 import { extractImageThumb } from './messages-media'
-import { Readable } from 'stream'
-import { lookup } from 'dns/promises'
-import { isIP } from 'net'
 
 const THUMBNAIL_WIDTH_PX = 192
 const MAX_LINK_PREVIEW_DOWNLOAD_BYTES = 10 * 1024 * 1024

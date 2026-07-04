@@ -642,8 +642,8 @@ export const makeSocket = (config: SocketConfig) => {
 					logger.error({ err: err })
 				})
 				await ws.close()
-			} catch {}
-			finally {
+			} catch {
+			} finally {
 				ws.removeAllListeners('error')
 			}
 		}
