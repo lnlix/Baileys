@@ -322,13 +322,38 @@ export const decryptMessageNode = (
 								})
 								break
 							case 'pkmsg':
-							case 'msg':
-								msgBuffer = await repository.decryptMessage({
-									jid: decryptionJid,
-									type: e2eType,
-									ciphertext: content
-								})
+							case 'msg': {
+								try {
+									msgBuffer = await repository.decryptMessage({
+										jid: decryptionJid,
+										type: e2eType,
+										ciphertext: content
+									})
+								} catch (err) {
+									const altUser = isLidUser(decryptionJid)
+										? isPnUser(author)
+											? author
+											: stanza.attrs.participant_pn || stanza.attrs.sender_pn
+										: isLidUser(author)
+											? author
+											: stanza.attrs.participant_lid || stanza.attrs.sender_lid
+									if (!altUser || altUser === decryptionJid) {
+										throw err
+									}
+
+									logger.debug(
+										{ key: fullMessage.key, primary: decryptionJid, retryWith: altUser },
+										'primary identity failed to decrypt, retrying with stanza-provided PN/LID pairing'
+									)
+									msgBuffer = await repository.decryptMessage({
+										jid: altUser,
+										type: e2eType,
+										ciphertext: content
+									})
+								}
+
 								break
+							}
 							case 'plaintext':
 								msgBuffer = content
 								break
