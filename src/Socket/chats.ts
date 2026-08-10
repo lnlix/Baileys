@@ -46,7 +46,7 @@ import {
 	processSyncAction
 } from '../Utils'
 import { makeMutex } from '../Utils/make-mutex'
-import processMessage from '../Utils/process-message'
+import processMessage, { unwrapSecretEncryptedMessage } from '../Utils/process-message'
 import { buildTcTokenFromJid } from '../Utils/tc-token-utils'
 import {
 	type BinaryNode,
@@ -1192,6 +1192,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	}
 
 	const upsertMessage = ev.createBufferedFunction(async (msg: WAMessage, type: MessageUpsertType) => {
+		// message edits from newer clients arrive sealed with the original
+		// message's secret — decrypt before anything downstream sees the message
+		await unwrapSecretEncryptedMessage(msg, { creds: authState.creds, getMessage, logger })
+
 		ev.emit('messages.upsert', { messages: [msg], type })
 
 		if (!!msg.pushName) {
