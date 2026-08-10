@@ -93,8 +93,11 @@ const bootUnpairedSocket = async () => {
 	// registered up front so a failing expectation still shuts the socket down:
 	// its QR timer would otherwise outlive the test
 	cleanups.push(async () => {
-		await sock.end(new Error('test finished'))
-		await clear()
+		try {
+			await sock.end(new Error('test finished'))
+		} finally {
+			await clear()
+		}
 	})
 
 	const qrs: string[] = []
@@ -118,31 +121,34 @@ describe('CB:notification,type:companion_reg_refresh', () => {
 		}
 	})
 
-	it('rotates the adv secret and re-renders the QR on screen', async () => {
-		const { sock, creds, qrs, credsUpdates } = await bootUnpairedSocket()
+	it.each(['companion_reg_refresh', 'pair-device-rotate-qr'])(
+		'rotates the adv secret and re-renders the QR on screen for a <%s> child',
+		async childTag => {
+			const { sock, creds, qrs, credsUpdates } = await bootUnpairedSocket()
 
-		deliver(sock.ws, pairDeviceIq())
-		await settle()
-		expect(qrs).toHaveLength(1)
+			deliver(sock.ws, pairDeviceIq())
+			await settle()
+			expect(qrs).toHaveLength(1)
 
-		const retiredSecret = creds.advSecretKey
-		deliver(sock.ws, refreshNotification('companion_reg_refresh'))
-		await settle()
+			const retiredSecret = creds.advSecretKey
+			deliver(sock.ws, refreshNotification(childTag))
+			await settle()
 
-		// rotated, and handed to the auth store
-		expect(creds.advSecretKey).not.toBe(retiredSecret)
-		expect(Buffer.from(creds.advSecretKey, 'base64')).toHaveLength(32)
-		expect(credsUpdates).toContainEqual({ advSecretKey: creds.advSecretKey })
+			// rotated, and handed to the auth store
+			expect(creds.advSecretKey).not.toBe(retiredSecret)
+			expect(Buffer.from(creds.advSecretKey, 'base64')).toHaveLength(32)
+			expect(credsUpdates).toContainEqual({ advSecretKey: creds.advSecretKey })
 
-		// re-rendered: same ref, new secret. A fresh ref would spend one of the
-		// pool the server allotted, for a ref that has not expired.
-		expect(qrs).toHaveLength(2)
-		const [before, after] = qrs.map(qrFields)
-		expect(after![0]).toBe(before![0])
-		expect(after![0]).toBe(REFS[0])
-		expect(after![3]).toBe(creds.advSecretKey)
-		expect(after![3]).not.toBe(before![3])
-	})
+			// re-rendered: same ref, new secret. A fresh ref would spend one of the
+			// pool the server allotted, for a ref that has not expired.
+			expect(qrs).toHaveLength(2)
+			const [before, after] = qrs.map(qrFields)
+			expect(after![0]).toBe(before![0])
+			expect(after![0]).toBe(REFS[0])
+			expect(after![3]).toBe(creds.advSecretKey)
+			expect(after![3]).not.toBe(before![3])
+		}
+	)
 
 	it('ignores a notification carrying neither expected child', async () => {
 		const { sock, creds, qrs, credsUpdates } = await bootUnpairedSocket()
