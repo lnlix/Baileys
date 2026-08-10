@@ -1,6 +1,7 @@
 import { randomBytes } from 'crypto'
 import type { AuthenticationCreds, WABrowserDescription } from '../Types'
-import { type BinaryNode, getBinaryNodeChild } from '../WABinary'
+import type { BinaryNode } from '../WABinary'
+import { getBinaryNodeChild } from '../WABinary'
 import type { ILogger } from './logger'
 
 export enum CompanionWebClientType {
@@ -132,7 +133,7 @@ export const handleCompanionRegRefresh = (
 	// or pending pairing is verified against - re-minting it would break the
 	// session rather than refresh a pending registration.
 	if (creds.me) {
-		logger.debug('companion_reg_refresh on a registered session; keeping the adv secret')
+		logger.debug({ id: node.attrs.id }, 'companion_reg_refresh on a registered session; keeping the adv secret')
 		return 'ignored_registered'
 	}
 
@@ -141,7 +142,7 @@ export const handleCompanionRegRefresh = (
 	creds.advSecretKey = randomBytes(32).toString('base64')
 	emitCredsUpdate({ advSecretKey: creds.advSecretKey })
 
-	logger.info('rotated the adv secret the server asked to retire; re-rendering the pairing QR')
+	logger.info({ id: node.attrs.id }, 'rotated the adv secret the server asked to retire; re-rendering the pairing QR')
 	refreshQR()
 	return 'rotated'
 }
