@@ -4,19 +4,15 @@ import type { AuthenticationState } from '../../Types'
 import { type BinaryNode } from '../../WABinary'
 
 const sendNode = jest.fn(async () => undefined)
-const authState = {
-	creds: {
-		me: {
-			id: 'me@s.whatsapp.net',
-			lid: 'me@lid'
-		}
-	},
-	keys: {
-		get: jest.fn(async () => ({})),
-		set: jest.fn(async () => undefined),
-		transaction: jest.fn(async (work: () => Promise<unknown>) => await work()),
-		isInTransaction: jest.fn(() => false)
-	}
+const keys = {
+	get: jest.fn(async () => ({})),
+	set: jest.fn(async () => undefined),
+	transaction: jest.fn(async (work: () => Promise<unknown>) => await work()),
+	isInTransaction: jest.fn(() => false)
+}
+const authState: { creds: { me?: { id: string; lid: string } }; keys: typeof keys } = {
+	creds: {},
+	keys
 }
 const evHandlers = new Map<string, Array<(arg: unknown) => void>>()
 const ev = {
@@ -52,8 +48,14 @@ jest.unstable_mockModule('../../Socket/messages-send', () => ({
 
 const { makeMessagesRecvSocket } = await import('../../Socket/messages-recv')
 
-describe('incoming message tctoken capture (Baileys#2698/#2707)', () => {
+describe('messages-recv socket', () => {
 	beforeEach(() => {
+		authState.creds = {
+			me: {
+				id: 'me@s.whatsapp.net',
+				lid: 'me@lid'
+			}
+		}
 		authState.keys.get.mockClear()
 		authState.keys.set.mockClear()
 		authState.keys.transaction.mockClear()
@@ -101,5 +103,32 @@ describe('incoming message tctoken capture (Baileys#2698/#2707)', () => {
 		})
 		sock.ev.emit('connection.update', { connection: 'close' })
 		await new Promise(resolve => setTimeout(resolve, 0))
+	})
+
+	it('acknowledges notifications before credentials identify the device', async () => {
+		authState.creds = {}
+		const sock = makeMessagesRecvSocket({
+			...DEFAULT_CONNECTION_CONFIG,
+			auth: authState as unknown as AuthenticationState
+		})
+		const node: BinaryNode = {
+			tag: 'notification',
+			attrs: {
+				id: 'pre-login-notification',
+				from: 's.whatsapp.net',
+				type: 'companion_reg_refresh'
+			}
+		}
+
+		await expect(sock.sendMessageAck(node)).resolves.toBeUndefined()
+		expect(sendNode).toHaveBeenCalledWith({
+			tag: 'ack',
+			attrs: {
+				id: 'pre-login-notification',
+				to: 's.whatsapp.net',
+				class: 'notification',
+				type: 'companion_reg_refresh'
+			}
+		})
 	})
 })
