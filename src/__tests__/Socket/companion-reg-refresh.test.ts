@@ -79,9 +79,6 @@ const deliver = (ws: EventEmitter, node: BinaryNode) => {
 /** ref, noise key, identity key, adv secret, platform id - what the QR advertises */
 const qrFields = (qr: string) => qr.split('#')[1]!.split(',')
 
-/** the handlers ack and emit asynchronously; let those settle */
-const settle = () => new Promise(resolve => setTimeout(resolve, 50))
-
 const cleanups: Array<() => Promise<void>> = []
 
 const bootUnpairedSocket = async () => {
@@ -111,7 +108,28 @@ const bootUnpairedSocket = async () => {
 		credsUpdates.push(update)
 	})
 
-	return { sock, creds: state.creds, qrs, credsUpdates }
+	const waitForQR = () =>
+		new Promise<string>(resolve => {
+			const listener = ({ qr }: { qr?: string }) => {
+				if (qr) {
+					sock.ev.off('connection.update', listener)
+					resolve(qr)
+				}
+			}
+
+			sock.ev.on('connection.update', listener)
+		})
+	const waitForCredsUpdate = () =>
+		new Promise<Partial<AuthenticationCreds>>(resolve => {
+			const listener = (update: Partial<AuthenticationCreds>) => {
+				sock.ev.off('creds.update', listener)
+				resolve(update)
+			}
+
+			sock.ev.on('creds.update', listener)
+		})
+
+	return { sock, creds: state.creds, qrs, credsUpdates, waitForQR, waitForCredsUpdate }
 }
 
 describe('CB:notification,type:companion_reg_refresh', () => {
@@ -124,15 +142,18 @@ describe('CB:notification,type:companion_reg_refresh', () => {
 	it.each(['companion_reg_refresh', 'pair-device-rotate-qr'])(
 		'rotates the adv secret and re-renders the QR on screen for a <%s> child',
 		async childTag => {
-			const { sock, creds, qrs, credsUpdates } = await bootUnpairedSocket()
+			const { sock, creds, qrs, credsUpdates, waitForQR, waitForCredsUpdate } = await bootUnpairedSocket()
 
+			const firstQR = waitForQR()
 			deliver(sock.ws, pairDeviceIq())
-			await settle()
+			await firstQR
 			expect(qrs).toHaveLength(1)
 
 			const retiredSecret = creds.advSecretKey
+			const refreshedQR = waitForQR()
+			const credsUpdate = waitForCredsUpdate()
 			deliver(sock.ws, refreshNotification(childTag))
-			await settle()
+			await Promise.all([refreshedQR, credsUpdate])
 
 			// rotated, and handed to the auth store
 			expect(creds.advSecretKey).not.toBe(retiredSecret)
@@ -151,14 +172,14 @@ describe('CB:notification,type:companion_reg_refresh', () => {
 	)
 
 	it('ignores a notification carrying neither expected child', async () => {
-		const { sock, creds, qrs, credsUpdates } = await bootUnpairedSocket()
+		const { sock, creds, qrs, credsUpdates, waitForQR } = await bootUnpairedSocket()
 
+		const firstQR = waitForQR()
 		deliver(sock.ws, pairDeviceIq())
-		await settle()
+		await firstQR
 
 		const secretOnScreen = creds.advSecretKey
 		deliver(sock.ws, refreshNotification())
-		await settle()
 
 		expect(creds.advSecretKey).toBe(secretOnScreen)
 		expect(credsUpdates.some(update => 'advSecretKey' in update)).toBe(false)
