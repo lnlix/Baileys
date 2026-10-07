@@ -5,7 +5,7 @@ import { PreKeyWhisperMessage } from 'libsignal/src/protobufs'
 import { LRUCache } from 'lru-cache'
 import type { LIDMapping, SignalAuthState, SignalKeyStoreWithTransaction } from '../Types'
 import type { SignalRepositoryWithLIDStore } from '../Types/Signal'
-import { generateSignalPubKey } from '../Utils'
+import { BufferJSON, generateSignalPubKey } from '../Utils'
 import type { ILogger } from '../Utils/logger'
 import {
 	isHostedLidUser,
@@ -551,7 +551,7 @@ function signalStorage(
 		},
 		storeSenderKey: async (senderKeyName: SenderKeyName, key: SenderKeyRecord) => {
 			const keyId = senderKeyName.toString()
-			const serialized = JSON.stringify(key.serialize())
+			const serialized = JSON.stringify(key.serialize(), BufferJSON.replacer)
 			await keys.set({ 'sender-key': { [keyId]: Buffer.from(serialized, 'utf-8') } })
 		},
 		getOurRegistrationId: () => creds.registrationId,

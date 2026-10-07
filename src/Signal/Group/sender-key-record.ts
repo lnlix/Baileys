@@ -1,6 +1,30 @@
 import { BufferJSON } from '../../Utils/generics'
 import { SenderKeyState } from './sender-key-state'
 
+function senderKeyReviver(key: string, value: unknown): unknown {
+	if (
+		value !== null &&
+		typeof value === 'object' &&
+		'type' in value &&
+		value.type === 'Buffer' &&
+		'data' in value &&
+		Array.isArray(value.data)
+	) {
+		const bytes: unknown[] = value.data
+		if (
+			!bytes.every(
+				(byte): byte is number => typeof byte === 'number' && Number.isInteger(byte) && byte >= 0 && byte <= 255
+			)
+		) {
+			throw new Error('Invalid sender-key Buffer byte array')
+		}
+
+		return Buffer.from(bytes)
+	}
+
+	return BufferJSON.reviver(key, value)
+}
+
 export interface SenderKeyStateStructure {
 	senderKeyId: number
 	senderChainKey: {
@@ -63,7 +87,7 @@ export class SenderKeyRecord {
 	}
 	static deserialize(data: Uint8Array): SenderKeyRecord {
 		const str = Buffer.from(data).toString('utf-8')
-		const parsed = JSON.parse(str, BufferJSON.reviver)
+		const parsed = JSON.parse(str, senderKeyReviver)
 		return new SenderKeyRecord(parsed)
 	}
 }
