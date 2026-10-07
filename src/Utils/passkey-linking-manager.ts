@@ -8,20 +8,11 @@ import type {
 	SendPasskeyResponseOptions,
 	WABrowserDescription
 } from '../Types'
-import {
-	aesEncryptGCM,
-	Curve,
-	hkdf
-} from './crypto'
+import { type BinaryNode, getBinaryNodeChild, getBinaryNodeChildBuffer, S_WHATSAPP_NET } from '../WABinary'
 import { getCompanionPlatformId } from './companion-reg-client-utils'
+import { aesEncryptGCM, Curve, hkdf } from './crypto'
 import { bytesToCrockford } from './generics'
 import type { ILogger } from './logger'
-import {
-	type BinaryNode,
-	getBinaryNodeChild,
-	getBinaryNodeChildBuffer,
-	S_WHATSAPP_NET
-} from '../WABinary'
 
 type PasskeyRuntimeCache = {
 	keyPair: ReturnType<typeof Curve.generateKeyPair>

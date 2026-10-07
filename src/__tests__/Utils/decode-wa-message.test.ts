@@ -1,11 +1,60 @@
 import { Boom } from '@hapi/boom'
-import { decodeMessageNode } from '../../Utils/decode-wa-message'
+import { jest } from '@jest/globals'
+import { proto } from '../../../WAProto/index.js'
+import { makeLibSignalRepository } from '../../Signal/libsignal'
+import { initAuthCreds } from '../../Utils/auth-utils'
+import { decodeMessageNode, decryptMessageNode } from '../../Utils/decode-wa-message'
 import type { BinaryNode } from '../../WABinary'
+import { makeSignalStore, signalLogger } from '../TestUtils/signal-store'
 
 const ME_ID = '5511999999999@s.whatsapp.net'
 const ME_LID = '111111111111111@lid'
 const PEER_ID = '5511888888888@s.whatsapp.net'
 const GROUP_ID = '120363000000000000@g.us'
+const PEER_LID = '222222222222222@lid'
+
+describe('decryption identity fallback', () => {
+	it.each(['success', 'fallback', 'both fail', 'no alternate'] as const)(
+		'preserves primary and alternate handling: %s',
+		async scenario => {
+			const store = makeSignalStore()
+			const repository = makeLibSignalRepository({ creds: initAuthCreds(), keys: store.keys }, signalLogger)
+			const encoded = Buffer.concat([proto.Message.encode({ conversation: 'test' }).finish(), Buffer.from([1])])
+			const decrypt = jest.spyOn(repository, 'decryptMessage')
+			if (scenario === 'success') decrypt.mockResolvedValue(encoded)
+			else {
+				decrypt.mockRejectedValueOnce(new Error('Bad MAC'))
+				if (scenario === 'fallback') decrypt.mockResolvedValueOnce(encoded)
+				else decrypt.mockRejectedValue(new Error('no session'))
+			}
+
+			try {
+				const stanza: BinaryNode = {
+					tag: 'message',
+					attrs: {
+						id: 'FALLBACK',
+						t: '1700000000',
+						from: PEER_LID,
+						...(scenario === 'no alternate' ? {} : { sender_pn: PEER_ID })
+					},
+					content: [{ tag: 'enc', attrs: { type: 'msg' }, content: Buffer.from([1, 2, 3]) }]
+				}
+				const result = decryptMessageNode(stanza, ME_ID, ME_LID, repository, signalLogger)
+				await result.decrypt()
+				expect(decrypt.mock.calls.map(([args]) => args.jid)).toEqual(
+					scenario === 'success' || scenario === 'no alternate' ? [PEER_LID] : [PEER_LID, PEER_ID]
+				)
+				if (scenario === 'success' || scenario === 'fallback')
+					expect(result.fullMessage.message?.conversation).toBe('test')
+				else expect(result.fullMessage.messageStubParameters).toEqual(['Bad MAC'])
+			} finally {
+				decrypt.mockRestore()
+				repository.close?.()
+				await store.keys.dispose()
+			}
+		}
+	)
+})
 
 const message = (attrs: Record<string, string>): BinaryNode => ({
 	tag: 'message',

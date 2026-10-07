@@ -8,6 +8,11 @@ import type { ILogger } from './logger'
 export class PreKeyManager {
 	private readonly queues = new Map<string, PQueue>()
 
+	/** Called only after the owning key store has drained its operations. */
+	clear(): void {
+		this.queues.clear()
+	}
+
 	constructor(
 		private readonly store: SignalKeyStore,
 		private readonly logger: ILogger

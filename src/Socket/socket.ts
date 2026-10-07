@@ -712,6 +712,11 @@ export const makeSocket = (config: SocketConfig) => {
 		}
 
 		closed = true
+		// End may be called from inside a transaction; drain without waiting on that caller.
+		void keys
+			.dispose()
+			.then(() => signalRepository.close?.())
+			.catch(err => logger.error({ err }, 'failed to dispose signal key store'))
 		logger.info({ trace: error?.stack }, error ? 'connection errored' : 'connection closed')
 
 		clearInterval(keepAliveReq)

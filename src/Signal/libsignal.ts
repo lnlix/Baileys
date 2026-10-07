@@ -21,6 +21,7 @@ import { SenderKeyName } from './Group/sender-key-name'
 import { SenderKeyRecord } from './Group/sender-key-record'
 import { GroupCipher, GroupSessionBuilder, SenderKeyDistributionMessage } from './Group'
 import { LIDMappingStore } from './lid-mapping'
+import { boundedSessionRecord, pruneSignalStates } from './session-retention'
 
 /** Extract identity key from PreKeyWhisperMessage for identity change detection */
 function extractIdentityFromPkmsg(ciphertext: Uint8Array): Uint8Array | undefined {
@@ -53,7 +54,7 @@ export function makeLibSignalRepository(
 	pnToLIDFunc?: (jids: string[]) => Promise<LIDMapping[] | undefined>
 ): SignalRepositoryWithLIDStore {
 	const lidMapping = new LIDMappingStore(auth.keys as SignalKeyStoreWithTransaction, logger, pnToLIDFunc)
-	const storage = signalStorage(auth, lidMapping)
+	const storage = signalStorage(auth, lidMapping, logger)
 
 	const parsedKeys = auth.keys as SignalKeyStoreWithTransaction
 	const migratedSessionCache = new LRUCache<string, true>({
@@ -204,7 +205,7 @@ export function makeLibSignalRepository(
 		},
 
 		async injectE2ESession({ jid, session }) {
-			logger.trace({ jid }, 'injecting E2EE session')
+			logger.trace({ reason: 'key-bundle' }, 'injecting E2EE session')
 			const cipher = new libsignal.SessionBuilder(storage, jidToSignalProtocolAddress(jid))
 			return parsedKeys.transaction(async () => {
 				// libsignal runtime accepts an absent prekey (initOutgoing checks `device.preKey && ...`)
@@ -325,7 +326,8 @@ export function makeLibSignalRepository(
 			)
 
 			// Single transaction for all migrations
-			return parsedKeys.transaction(
+			const migratedDeviceKeys: string[] = []
+			const result = await parsedKeys.transaction(
 				async (): Promise<{ migrated: number; skipped: number; total: number }> => {
 					// Prepare migration operations with addressing metadata
 					type MigrationOp = {
@@ -371,10 +373,11 @@ export function makeLibSignalRepository(
 						const pnSession = pnSessions[pnAddrStr]
 						if (pnSession) {
 							// Session exists (guaranteed from device discovery)
-							const fromSession = libsignal.SessionRecord.deserialize(pnSession)
+							const bounded = boundedSessionRecord(pnSession)
+							const fromSession = libsignal.SessionRecord.deserialize(bounded)
 							if (fromSession.haveOpenSession()) {
 								// Queue for bulk update: copy to LID, delete from PN
-								sessionUpdates[lidAddrStr] = fromSession.serialize()
+								sessionUpdates[lidAddrStr] = bounded
 								sessionUpdates[pnAddrStr] = null
 
 								migratedCount++
@@ -391,7 +394,7 @@ export function makeLibSignalRepository(
 						for (const op of migrationOps) {
 							if (sessionUpdates[op.toAddr.toString()]) {
 								const deviceKey = `${op.pnUser}.${op.deviceId}`
-								migratedSessionCache.set(deviceKey, true)
+								migratedDeviceKeys.push(deviceKey)
 							}
 						}
 					}
@@ -401,6 +404,9 @@ export function makeLibSignalRepository(
 				},
 				`migrate-${deviceJids.length}-sessions-${jidDecode(toJid)?.user}`
 			)
+			// A failed commit must remain eligible for migration on the next attempt.
+			for (const deviceKey of migratedDeviceKeys) migratedSessionCache.set(deviceKey, true)
+			return result
 		}
 	}
 
@@ -433,7 +439,8 @@ const jidToSignalSenderKeyName = (group: string, user: string): SenderKeyName =>
 
 function signalStorage(
 	{ creds, keys }: SignalAuthState,
-	lidMapping: LIDMappingStore
+	lidMapping: LIDMappingStore,
+	logger: ILogger
 ): SenderKeyStore &
 	libsignal.SignalStorage & {
 		loadIdentityKey(id: string): Promise<Uint8Array | undefined>
@@ -462,22 +469,26 @@ function signalStorage(
 
 	return {
 		loadSession: async (id: string) => {
-			try {
-				const wireJid = await resolveLIDSignalAddress(id)
-				const { [wireJid]: sess } = await keys.get('session', [wireJid])
-
-				if (sess) {
-					return libsignal.SessionRecord.deserialize(sess)
-				}
-			} catch (e) {
-				return null
-			}
-
-			return null
+			const wireJid = await resolveLIDSignalAddress(id)
+			const { [wireJid]: sess } = await keys.get('session', [wireJid])
+			return sess ? libsignal.SessionRecord.deserialize(boundedSessionRecord(sess)) : null
 		},
 		storeSession: async (id: string, session: libsignal.SessionRecord) => {
 			const wireJid = await resolveLIDSignalAddress(id)
-			await keys.set({ session: { [wireJid]: session.serialize() } })
+			const states = (session as unknown as { sessions: Record<string, unknown> }).sessions
+			const removed = pruneSignalStates(states)
+			const serialized = session.serialize()
+			await keys.set({ session: { [wireJid]: serialized } })
+			if (logger.level === 'trace') {
+				logger.trace(
+					{
+						removed,
+						states: Object.keys(states).length,
+						serializedBytes: Buffer.byteLength(JSON.stringify(serialized))
+					},
+					'signal session staged for persistence'
+				)
+			}
 		},
 		isTrustedIdentity: () => {
 			return true // TOFU - Trust on First Use (same as WhatsApp Web)

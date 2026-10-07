@@ -2,6 +2,7 @@ import NodeCache from '@cacheable/node-cache'
 import { Boom } from '@hapi/boom'
 import { proto } from '../../WAProto/index.js'
 import { DEFAULT_CACHE_TTLS, WA_DEFAULT_EPHEMERAL } from '../Defaults'
+import { makeLIDSessionRefresher } from '../Signal/session-init'
 import type {
 	AnyMessageContent,
 	MediaConnInfo,
@@ -330,17 +331,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			const lidResults = result.list.filter(a => !!a.lid)
 			if (lidResults.length > 0) {
 				logger.trace('Storing LID maps from device call')
-				await signalRepository.lidMapping.storeLIDPNMappings(lidResults.map(a => ({ lid: a.lid as string, pn: a.id })))
-
-				// Force-refresh sessions for newly mapped LIDs to align identity addressing
-				try {
-					const lids = lidResults.map(a => a.lid as string)
-					if (lids.length) {
-						await assertSessions(lids, true)
-					}
-				} catch (e) {
-					logger.warn({ e, count: lidResults.length }, 'failed to assert sessions for newly mapped LIDs')
-				}
+				await refreshLIDSessions(lidResults.map(a => ({ lid: a.lid as string, pn: a.id })))
 			}
 
 			const extracted = extractDeviceJids(
@@ -507,6 +498,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 	// batch processing, return true if any
 	assertSessions = batched(assertSessions, BATCH_JID_SIZE, (results: boolean[]) => results.some(Boolean))
+	const refreshLIDSessions = makeLIDSessionRefresher(authState.keys, signalRepository, assertSessions, logger)
 
 	const sendPeerDataOperationMessage = async (
 		pdoMessage: proto.Message.IPeerDataOperationRequestMessage

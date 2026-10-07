@@ -23,10 +23,14 @@ import { PreKeyManager } from './pre-key-manager'
  * Transaction context stored in AsyncLocalStorage
  */
 interface TransactionContext {
+	owner: symbol
+	active: boolean
 	cache: SignalDataSet
 	mutations: SignalDataSet
 	dbQueries: number
 }
+
+const txStorage = new AsyncLocalStorage<TransactionContext>()
 
 /**
  * Adds caching capability to a SignalKeyStore
@@ -117,8 +121,26 @@ export const addTransactionCapability = (
 	state: SignalKeyStore,
 	logger: ILogger,
 	{ maxCommitRetries, delayBetweenTriesMs }: TransactionCapabilityOptions
-): SignalKeyStoreWithTransaction => {
-	const txStorage = new AsyncLocalStorage<TransactionContext>()
+): SignalKeyStoreWithTransaction & { dispose(): Promise<void> } => {
+	const owner = Symbol('signal-key-store')
+	let disposed = false
+	const pending = new Set<Promise<unknown>>()
+	let disposal: Promise<void> | undefined
+	const getContext = () => {
+		const ctx = txStorage.getStore()
+		return ctx?.owner === owner && ctx.active ? ctx : undefined
+	}
+
+	const run = <T>(work: () => T | Promise<T>): Promise<T> => {
+		if (disposed && !getContext()) return Promise.reject(new Error('Signal key store is disposed'))
+		const promise = Promise.resolve().then(work)
+		pending.add(promise)
+		void promise.then(
+			() => pending.delete(promise),
+			() => pending.delete(promise)
+		)
+		return promise
+	}
 
 	// Queues for concurrency control (keyed by signal data type - bounded set)
 	const keyQueues = new Map<string, PQueue>()
@@ -182,7 +204,7 @@ export const addTransactionCapability = (
 	 * Check if currently in a transaction
 	 */
 	function isInTransaction(): boolean {
-		return !!txStorage.getStore()
+		return !!getContext()
 	}
 
 	/**
@@ -214,9 +236,9 @@ export const addTransactionCapability = (
 		}
 	}
 
-	return {
+	const store: SignalKeyStoreWithTransaction = {
 		get: async (type, ids) => {
-			const ctx = txStorage.getStore()
+			const ctx = getContext()
 
 			if (!ctx) {
 				// No transaction - direct read without exclusive lock for concurrency
@@ -251,7 +273,7 @@ export const addTransactionCapability = (
 		},
 
 		set: async data => {
-			const ctx = txStorage.getStore()
+			const ctx = getContext()
 
 			if (!ctx) {
 				// No transaction - direct write with queue protection
@@ -301,7 +323,7 @@ export const addTransactionCapability = (
 		isInTransaction,
 
 		transaction: async (work, key) => {
-			const existing = txStorage.getStore()
+			const existing = getContext()
 
 			// Nested transaction - reuse existing context
 			if (existing) {
@@ -316,6 +338,8 @@ export const addTransactionCapability = (
 			try {
 				return await mutex.runExclusive(async () => {
 					const ctx: TransactionContext = {
+						owner,
+						active: true,
 						cache: {},
 						mutations: {},
 						dbQueries: 0
@@ -333,13 +357,34 @@ export const addTransactionCapability = (
 
 						return result
 					} catch (error) {
-						logger.error({ error }, 'transaction failed, rolling back')
+						logger.error({ err: error }, 'transaction failed, rolling back')
 						throw error
+					} finally {
+						ctx.active = false
+						ctx.cache = {}
+						ctx.mutations = {}
 					}
 				})
 			} finally {
 				releaseTxMutexRef(key)
 			}
+		}
+	}
+	return {
+		...store,
+		get: (type, ids) => run(() => store.get(type, ids)),
+		set: data => run(() => store.set(data)),
+		transaction: (work, key) => run(() => store.transaction(work, key)),
+		dispose: () => {
+			disposed = true
+			disposal ??= (async () => {
+				while (pending.size) await Promise.allSettled([...pending])
+				keyQueues.clear()
+				preKeyManager.clear()
+				txMutexes.clear()
+				txMutexRefCounts.clear()
+			})()
+			return disposal
 		}
 	}
 }

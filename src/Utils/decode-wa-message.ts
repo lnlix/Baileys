@@ -269,6 +269,32 @@ export const decryptMessageNode = (
 	logger: ILogger
 ) => {
 	const { fullMessage, author, sender } = decodeMessageNode(stanza, meId, meLid)
+	const decryptWithFallback = async (jid: string, type: 'pkmsg' | 'msg', ciphertext: Uint8Array) => {
+		try {
+			return await repository.decryptMessage({ jid, type, ciphertext })
+		} catch (err) {
+			const altUser = isLidUser(jid)
+				? isPnUser(author)
+					? author
+					: stanza.attrs.participant_pn || stanza.attrs.sender_pn
+				: isLidUser(author)
+					? author
+					: stanza.attrs.participant_lid || stanza.attrs.sender_lid
+			if (!altUser || altUser === jid) throw err
+
+			logger.debug(
+				{ key: fullMessage.key, primary: jid, retryWith: altUser },
+				'primary identity failed to decrypt, retrying with stanza-provided PN/LID pairing'
+			)
+			try {
+				return await repository.decryptMessage({ jid: altUser, type, ciphertext })
+			} catch {
+				// Preserve the primary error (e.g. Bad MAC) over a missing fallback session.
+				throw err
+			}
+		}
+	}
+
 	return {
 		fullMessage,
 		category: stanza.attrs.category,
@@ -322,44 +348,9 @@ export const decryptMessageNode = (
 								})
 								break
 							case 'pkmsg':
-							case 'msg': {
-								try {
-									msgBuffer = await repository.decryptMessage({
-										jid: decryptionJid,
-										type: e2eType,
-										ciphertext: content
-									})
-								} catch (err) {
-									const altUser = isLidUser(decryptionJid)
-										? isPnUser(author)
-											? author
-											: stanza.attrs.participant_pn || stanza.attrs.sender_pn
-										: isLidUser(author)
-											? author
-											: stanza.attrs.participant_lid || stanza.attrs.sender_lid
-									if (!altUser || altUser === decryptionJid) {
-										throw err
-									}
-
-									logger.debug(
-										{ key: fullMessage.key, primary: decryptionJid, retryWith: altUser },
-										'primary identity failed to decrypt, retrying with stanza-provided PN/LID pairing'
-									)
-									try {
-										msgBuffer = await repository.decryptMessage({
-											jid: altUser,
-											type: e2eType,
-											ciphertext: content
-										})
-									} catch {
-										// preserve the original, more informative error
-										// (e.g. "Bad MAC") over the retry's (e.g. "no session")
-										throw err
-									}
-								}
-
+							case 'msg':
+								msgBuffer = await decryptWithFallback(decryptionJid, e2eType, content)
 								break
-							}
 							case 'plaintext':
 								msgBuffer = content
 								break
