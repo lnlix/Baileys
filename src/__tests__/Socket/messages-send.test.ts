@@ -163,14 +163,16 @@ describe('relayMessage retry to a single device', () => {
 	})
 
 	it.each([
-		'222222222222222@s.whatsapp.net',
-		'222222222222222:0@s.whatsapp.net',
-		'222222222222222:3@s.whatsapp.net',
-		'222222222222222@lid',
-		'222222222222222:0@lid',
-		'222222222222222:3@lid',
-		'123456789012345:7@lid'
-	])('sends one encrypted group retry with its sender key only to %s', async participant => {
+		['222222222222222@s.whatsapp.net', false],
+		['222222222222222:0@s.whatsapp.net', false],
+		['222222222222222:3@s.whatsapp.net', false],
+		['222222222222222@lid', false],
+		['222222222222222:0@lid', false],
+		['222222222222222:3@lid', false],
+		['5511999999999@s.whatsapp.net', true],
+		['123456789012345@lid', true],
+		['123456789012345:7@lid', true]
+	] as const)('sends one encrypted group retry with its sender key only to %s', async (participant, isOwnDevice) => {
 		const stanza = await relayRetry('120363000000000000@g.us', participant)
 		const target = jidDecode(participant)
 		if (!target) throw new Error('Invalid fixture participant')
@@ -190,9 +192,16 @@ describe('relayMessage retry to a single device', () => {
 		const content = encrypted[0]?.content
 		expect(content).toBeInstanceOf(Uint8Array)
 		if (!(content instanceof Uint8Array)) throw new Error('Missing retry ciphertext')
-		const message = proto.Message.decode(unpadRandomMax16(content))
+		const envelope = proto.Message.decode(unpadRandomMax16(content))
+		const message = isOwnDevice ? envelope.deviceSentMessage?.message : envelope
+		if (!message) throw new Error('Missing retry message')
+		if (isOwnDevice) {
+			expect(envelope.deviceSentMessage?.destinationJid).toBe('120363000000000000@g.us')
+		} else {
+			expect(envelope.deviceSentMessage).toBeNull()
+		}
+
 		expect(message.conversation).toBe('hello')
-		expect(message.deviceSentMessage).toBeNull()
 		expect(message.senderKeyDistributionMessage?.groupId).toBe('120363000000000000@g.us')
 		expect(message.senderKeyDistributionMessage?.axolotlSenderKeyDistributionMessage).toEqual(Buffer.from([4, 5, 6]))
 	})

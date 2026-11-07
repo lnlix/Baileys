@@ -987,15 +987,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}
 				}
 
-				const encodedMessageToSend =
-					isMe && !isGroupOrStatus
-						? encodeWAMessage({
-								deviceSentMessage: {
-									destinationJid,
-									message: messageToSend
-								}
-							})
-						: encodeWAMessage(messageToSend)
+				const encodedMessageToSend = isMe
+					? encodeWAMessage({
+							deviceSentMessage: {
+								destinationJid,
+								message: messageToSend
+							}
+						})
+					: encodeWAMessage(messageToSend)
 
 				const { type, ciphertext: encryptedContent } = await signalRepository.encryptMessage({
 					data: encodedMessageToSend,
