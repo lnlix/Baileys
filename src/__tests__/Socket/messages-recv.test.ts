@@ -1,9 +1,13 @@
 import { jest } from '@jest/globals'
 import { DEFAULT_CONNECTION_CONFIG } from '../../Defaults'
-import type { AuthenticationState } from '../../Types'
+import type { AuthenticationState, MessageRelayOptions, WAMessageContent } from '../../Types'
 import { type BinaryNode } from '../../WABinary'
 
 const sendNode = jest.fn(async () => undefined)
+const relayMessage = jest.fn<(jid: string, message: WAMessageContent, options: MessageRelayOptions) => Promise<string>>(
+	async () => 'old-id'
+)
+const onUnexpectedError = jest.fn()
 const keys = {
 	get: jest.fn(async () => ({})),
 	set: jest.fn(async () => undefined),
@@ -34,11 +38,15 @@ jest.unstable_mockModule('../../Socket/messages-send', () => ({
 	makeMessagesSocket: jest.fn(() => ({
 		authState,
 		sendNode,
+		relayMessage,
+		receiptMutex: { mutex: async (work: () => Promise<void>) => work() },
+		assertSessions: jest.fn(async () => true),
 		ws: { on: jest.fn(), isOpen: true },
 		ev,
 		registerSocketEndHandler: jest.fn(),
-		onUnexpectedError: jest.fn(),
+		onUnexpectedError,
 		signalRepository: {
+			jidToSignalProtocolAddress: (jid: string) => jid,
 			lidMapping: {
 				getLIDForPN: jest.fn()
 			}
@@ -61,10 +69,45 @@ describe('messages-recv socket', () => {
 		authState.keys.transaction.mockClear()
 		authState.keys.isInTransaction.mockClear()
 		sendNode.mockClear()
+		relayMessage.mockClear()
+		onUnexpectedError.mockClear()
 		evHandlers.clear()
 		ev.on.mockClear()
 		ev.emit.mockClear()
 	})
+
+	it.each(['200@s.whatsapp.net', '200:0@s.whatsapp.net', '200:2@s.whatsapp.net', '200@lid', '200:0@lid', '200:2@lid'])(
+		'keeps a stored group message retry targeted to %s',
+		async participant => {
+			const message = { conversation: 'Fictional stored message' }
+			const getMessage = jest.fn(async () => message)
+			const sock = makeMessagesRecvSocket({
+				...DEFAULT_CONNECTION_CONFIG,
+				auth: authState as unknown as AuthenticationState,
+				getMessage
+			})
+			const onCalls = (sock.ws.on as jest.Mock).mock.calls as [string, (node: BinaryNode) => Promise<void>][]
+			const handler = onCalls.find(([tag]) => tag === 'CB:receipt')?.[1]
+			expect(handler).toBeDefined()
+			await handler?.({
+				tag: 'receipt',
+				attrs: { from: '300@g.us', participant, id: 'old-id', type: 'retry', edit: '1' },
+				content: [{ tag: 'retry', attrs: { count: '1', t: '1700000000' } }]
+			})
+
+			expect(onUnexpectedError).not.toHaveBeenCalled()
+			expect(getMessage).toHaveBeenCalledWith(expect.objectContaining({ remoteJid: '300@g.us', id: 'old-id' }))
+			expect(relayMessage).toHaveBeenCalledTimes(1)
+			expect(relayMessage).toHaveBeenCalledWith('300@g.us', message, {
+				messageId: 'old-id',
+				participant: { jid: participant, count: 1 },
+				additionalAttributes: { t: '1700000000', edit: '1' }
+			})
+			expect(keys.set).not.toHaveBeenCalled()
+			expect(ev.emit).not.toHaveBeenCalled()
+			expect(sendNode).toHaveBeenCalledWith(expect.objectContaining({ tag: 'ack' }))
+		}
+	)
 
 	it('stores a tctoken riding along on an incoming message, wired through the real CB:message handler', async () => {
 		const sock = makeMessagesRecvSocket({

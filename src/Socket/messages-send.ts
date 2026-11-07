@@ -848,7 +848,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				})
 
 				await authState.keys.set({ 'sender-key-memory': { [jid]: senderKeyMap } })
-			} else {
+			} else if (!isRetryResend) {
 				// ADDRESSING CONSISTENCY: Match own identity to conversation context
 				// TODO: investigate if this is true
 				let ownId = meId
@@ -957,6 +957,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 			if (isRetryResend) {
 				const isMe = isOwnDeviceJid(participant!.jid, meId, meLid)
+				await assertSessions([participant!.jid])
 
 				let messageToSend = message
 				if (isGroupOrStatus) {
@@ -986,14 +987,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}
 				}
 
-				const encodedMessageToSend = isMe
-					? encodeWAMessage({
-							deviceSentMessage: {
-								destinationJid,
-								message: messageToSend
-							}
-						})
-					: encodeWAMessage(messageToSend)
+				const encodedMessageToSend =
+					isMe && !isGroupOrStatus
+						? encodeWAMessage({
+								deviceSentMessage: {
+									destinationJid,
+									message: messageToSend
+								}
+							})
+						: encodeWAMessage(messageToSend)
 
 				const { type, ciphertext: encryptedContent } = await signalRepository.encryptMessage({
 					data: encodedMessageToSend,

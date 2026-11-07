@@ -1369,11 +1369,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			msgs.push(msg)
 		}
 
-		// if it's the primary jid sending the request
-		// just re-send the message to everyone
-		// prevents the first message decryption failure
-		const sendToAll = !jidDecode(participant)?.device
-
 		const sessionId = signalRepository.jidToSignalProtocolAddress(participant)
 		let injectedFromBundle = false
 
@@ -1442,12 +1437,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			await assertSessions([participant], true)
 		}
 
-		if (isJidGroup(remoteJid)) {
-			await authState.keys.set({ 'sender-key-memory': { [remoteJid]: null } })
-		}
-
 		logger.debug(
-			{ participant, sendToAll, shouldRecreateSession, recreateReason, injectedFromBundle },
+			{ participant, shouldRecreateSession, recreateReason, injectedFromBundle },
 			'prepared session for retry resend'
 		)
 
@@ -1456,14 +1447,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 			if (msg && (await willSendMessageAgain(ids[i], participant))) {
 				await updateSendMessageAgainCount(ids[i], participant)
-				const msgRelayOpts: MessageRelayOptions = { messageId: ids[i] }
-
-				if (sendToAll) {
-					msgRelayOpts.useUserDevicesCache = false
-				} else {
-					msgRelayOpts.participant = {
+				// Primary devices need the same targeted retry as companions; omitting
+				// participant would encrypt and broadcast the stored message to the group again.
+				const msgRelayOpts: MessageRelayOptions = {
+					messageId: ids[i],
+					participant: {
 						jid: participant,
-						count: +retryNode.attrs.count!
+						count: retryCount
+					},
+					additionalAttributes: {
+						...(retryNode.attrs.t ? { t: retryNode.attrs.t } : {}),
+						...(receiptNode.attrs.edit ? { edit: receiptNode.attrs.edit } : {})
 					}
 				}
 
